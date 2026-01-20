@@ -1,0 +1,6 @@
+{
+    "inference_type": "video2world",
+    "name": "robot_pouring_glare",
+    "input_path": "robot_pouring_glare.mp4",
+    "prompt_path": "robot_pouring.txt"
+}
