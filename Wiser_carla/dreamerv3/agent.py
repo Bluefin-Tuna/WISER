@@ -693,8 +693,9 @@ class WorldModel(nj.Module):
     def loss(self, data, state):
         key = random.PRNGKey(42)
         if self.config.run.dropout_training: # Set to true to do dropout representation training
-            data = self.randomly_mask_images_per_timestep(data, key, mask_value=0.0)
-        enc_data = self.randomly_dropout_pixels_per_timestep(data, key)
+            enc_data = self.randomly_mask_images_per_timestep(data, key, mask_value=0.0)
+        else:
+            enc_data = data
         embed = self.encoder(enc_data)
         prev_latent, prev_action = state
         prev_actions = jnp.concatenate([prev_action[:, None], data["action"][:, :-1]], 1)
