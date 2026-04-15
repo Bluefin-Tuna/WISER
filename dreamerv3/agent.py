@@ -1,15 +1,15 @@
 import jax
-import numpy as np
 import jax.numpy as jnp
-import jax.nn as jnn
-import random as py_rand
 from jax import random
+
 # tree_map = jax.tree_util.tree_map
 try:
     from jax import tree
+
     tree_map = tree.map
 except (ImportError, AttributeError):
     from jax import tree_util
+
     tree_map = tree_util.tree_map
 
 sg = lambda x: tree_map(jax.lax.stop_gradient, x)
@@ -17,6 +17,17 @@ import itertools
 import logging
 
 logger = logging.getLogger()
+
+IMAGE_OBS_KEYS = (
+    "birdeye_gt",
+    "birdeye_raw",
+    "birdeye_with_traffic_lights",
+    "birdeye_wpt",
+    "camera",
+    "lidar",
+)
+
+BASE_POLICY_MODES = ("train", "eval", "explore")
 
 
 class CheckTypesFilter(logging.Filter):
@@ -38,387 +49,359 @@ class Agent(nj.Module):
         self.act_space = act_space["action"]
         self.step = step
         self.wm = WorldModel(obs_space, act_space, config, name="wm")
-        self.task_behavior = getattr(behaviors, config.task_behavior)(self.wm, self.act_space, self.config, name="task_behavior")
+        self.task_behavior = getattr(behaviors, config.task_behavior)(
+            self.wm, self.act_space, self.config, name="task_behavior"
+        )
         if config.expl_behavior == "None":
             self.expl_behavior = self.task_behavior
         else:
-            self.expl_behavior = getattr(behaviors, config.expl_behavior)(self.wm, self.act_space, self.config, name="expl_behavior")
+            self.expl_behavior = getattr(behaviors, config.expl_behavior)(
+                self.wm, self.act_space, self.config, name="expl_behavior"
+            )
 
     def policy_initial(self, batch_size):
         return (
             self.wm.initial(batch_size),
             self.task_behavior.initial(batch_size),
             self.expl_behavior.initial(batch_size),
+            jnp.array(0, dtype=jnp.int32),
         )
 
     def train_initial(self, batch_size):
         return self.wm.initial(batch_size)
-    
-    def get_recon_imgs(self, obs, posterior, prior, key='birdeye_wpt'):
-        reconstruct_prior = self.wm.heads['decoder'](prior)[key].mode()
-        reconstruct_post = self.wm.heads['decoder'](posterior)[key].mode()
+
+    def _configured_cnn_keys(self):
+        keys = self.wm.config.encoder.cnn_keys
+        if isinstance(keys, str):
+            return [k for k in keys.split("|") if k and k != "none"]
+        if isinstance(keys, (list, tuple)):
+            return [k for k in keys if k and k != "none"]
+        return []
+
+    def _primary_image_key(self, obs):
+        for key in self._configured_cnn_keys():
+            if key in obs:
+                return key
+        available = [key for key in IMAGE_OBS_KEYS if key in obs]
+        if available:
+            return available[0]
+        raise KeyError("No available image key found in observation.")
+
+    def get_recon_imgs(self, obs, posterior, prior, key="birdeye_wpt"):
+        reconstruct_prior = self.wm.heads["decoder"](prior)[key].mode()
+        reconstruct_post = self.wm.heads["decoder"](posterior)[key].mode()
         truth = obs[key]
-        
-        return truth,  reconstruct_post, reconstruct_prior
-    
-    def get_single_recon(self, latent, key='birdeye_wpt'):
-        reconstruct = self.wm.heads['decoder'](latent)[key].mode()
+
+        return truth, reconstruct_post, reconstruct_prior
+
+    def get_single_recon(self, latent, key="birdeye_wpt"):
+        reconstruct = self.wm.heads["decoder"](latent)[key].mode()
         return reconstruct
-    
+
     def interpolate(self, prev_latent, prev_action, obs, image_key, prior_orig):
-        def tanh(gradients):
-            # normalized = (gradients - gradients.min()) / (gradients.max() - gradients.min() + 1e-8)
-            # normalized = jnn.sigmoid(gradients - 0.5)
+        def normalize_gradients(gradients):
             normalized = 2.0 * jnp.power(gradients - 0.5, 3.0) + 0.5
-            mean = jnp.max(gradients)
-            return normalized, mean
-        
-        def activation_experimental(gradients):
-            # normalized = (gradients - gradients.min()) / (gradients.max() - gradients.min() + 1e-8)
-            # normalized = jnn.sigmoid(gradients - 0.5)
-            normalized = jnn.sigmoid(gradients + 1)
-            # normalized = 2.0 * jnp.power(nor - 0.5, 3.0) + 0.5
-            mean = jnp.mean(gradients)
-            return normalized, mean
-        
+            return normalized
+
         def compute_surprise_for_obs(obs_input):
             """Compute surprise for given observation - used for gradient computation"""
             embed = self.wm.encoder(obs_input)
             temp_latent, temp_prior = self.wm.rssm.obs_step(
-                prev_latent, prev_action, embed, obs_input['is_first']
+                prev_latent, prev_action, embed, obs_input["is_first"]
             )
             surprise = self.wm.rssm.get_dist(temp_latent).kl_divergence(
                 self.wm.rssm.get_dist(temp_prior)
             )
             return surprise.mean()  # Return scalar for gradient computation
+
         surprise_grad_fn = jax.grad(compute_surprise_for_obs)
         gradients = surprise_grad_fn(obs)
-        normalized_gradients, mean_gradients = tanh(jnp.abs(gradients[image_key]))
+        normalized_gradients = normalize_gradients(jnp.abs(gradients[image_key]))
         prior_img = self.get_single_recon(prior_orig, image_key)
-        
-        # interpolation = reconstruct_post#(1 - normalized_gradients) * obs[image_key] + normalized_gradients * prior_img
-        interpolation = (1 - normalized_gradients) * obs[image_key] + normalized_gradients * prior_img
+        interpolation = (1 - normalized_gradients) * obs[
+            image_key
+        ] + normalized_gradients * prior_img
         return interpolation
 
-    def policy(self, obs, state, mode="train"):
+    def _surprise_mode_latent(
+        self,
+        mode,
+        obs,
+        prev_latent,
+        prev_action,
+        latent,
+        prior_orig,
+    ):
+        available_keys = [key for key in IMAGE_OBS_KEYS if key in obs]
+        if not available_keys:
+            return latent
 
-        self.config.jax.jit and print("Tracing policy function.")
-        obs = self.preprocess(obs)
-        if len(state) == 5:
-            (prev_latent, prev_action), task_state, expl_state, stage, step = state
-            step+=1
+        candidate_latents = []
+        surprise_scores = []
+        base_surprise = self.wm.rssm.get_dist(latent).kl_divergence(
+            self.wm.rssm.get_dist(prior_orig)
+        )
+
+        if "full" in mode:
+            for r in range(1, len(available_keys) + 1):
+                for combo in itertools.combinations(available_keys, r):
+                    obs_masked = obs.copy()
+                    for key in combo:
+                        obs_masked[key] = jnp.zeros_like(obs[key])
+
+                    embed = self.wm.encoder(obs_masked)
+                    temp_latent, temp_prior_orig = self.wm.rssm.obs_step(
+                        prev_latent, prev_action, embed, obs["is_first"]
+                    )
+                    surprise = self.wm.rssm.get_dist(temp_latent).kl_divergence(
+                        self.wm.rssm.get_dist(temp_prior_orig)
+                    )
+                    candidate_latents.append(temp_latent)
+                    surprise_scores.append(jnp.mean(surprise))
         else:
-            (prev_latent, prev_action), task_state, expl_state = state
-            stage = jnp.array(0) # or some default value
-            step = 0
-            print(step)
+            for image_key in available_keys:
+                obs_masked = obs.copy()
+                for key in available_keys:
+                    obs_masked[key] = jnp.zeros_like(obs[key])
+                obs_masked[image_key] = obs[image_key]
+
+                embed = self.wm.encoder(obs_masked)
+                temp_latent, temp_prior_orig = self.wm.rssm.obs_step(
+                    prev_latent, prev_action, embed, obs["is_first"]
+                )
+                surprise = self.wm.rssm.get_dist(temp_latent).kl_divergence(
+                    self.wm.rssm.get_dist(temp_prior_orig)
+                )
+                candidate_latents.append(temp_latent)
+                surprise_scores.append(jnp.mean(surprise))
+
+            sorted_indices = jnp.argsort(jnp.stack(surprise_scores))[::-1]
+            obs_iter = obs.copy()
+            depth = min(len(available_keys), int(self.config.run.surprise_depth))
+            for i in range(depth):
+                idx = sorted_indices[i]
+                for j, key_name in enumerate(available_keys):
+                    should_mask = idx == j
+                    obs_iter[key_name] = jnp.where(
+                        should_mask,
+                        jnp.zeros_like(obs_iter[key_name]),
+                        obs_iter[key_name],
+                    )
+
+                embed = self.wm.encoder(obs_iter)
+                temp_latent, temp_prior_orig = self.wm.rssm.obs_step(
+                    prev_latent, prev_action, embed, obs["is_first"]
+                )
+                surprise = self.wm.rssm.get_dist(temp_latent).kl_divergence(
+                    self.wm.rssm.get_dist(temp_prior_orig)
+                )
+                candidate_latents.append(temp_latent)
+                surprise_scores.append(jnp.mean(surprise))
+
+        candidate_latents.append(latent)
+        surprise_scores.append(jnp.mean(base_surprise))
+
+        min_idx = jnp.argmin(jnp.stack(surprise_scores))
+        stacked_latents = tree_map(
+            lambda *candidates: jnp.stack(candidates, axis=0),
+            *candidate_latents,
+        )
+        return tree_map(lambda stacked: stacked[min_idx], stacked_latents)
+
+    def _reject_mode_latent(
+        self,
+        obs,
+        prev_latent,
+        prev_action,
+        latent,
+        prior_orig,
+        stage,
+    ):
+        image_key = self._primary_image_key(obs)
+        is_first = jnp.ones_like(obs["is_first"], dtype=jnp.float32)
 
         embed = self.wm.encoder(obs)
-        latent, prior_orig = self.wm.rssm.obs_step(prev_latent, prev_action, embed, obs["is_first"])
-        if mode not in ['train', 'eval', 'explore']:
-            available_keys = ["birdeye_gt","birdeye_raw","birdeye_with_traffic_lights","birdeye_wpt","camera","lidar"]
-            if 'surprise' in mode:
-                used_keys = ['None'] + available_keys
-                used_keys = np.array(used_keys)
-                total_newlat_seperate = []
-                surprises = []
-                # Compute baseline surprise
-                base_surprise = self.wm.rssm.get_dist(latent).kl_divergence(self.wm.rssm.get_dist(prior_orig))
-                if 'full' in mode:
-                    # Iterate over all combinations of keys (masking 1, 2, ..., N keys)
-                    for r in range(1, len(available_keys) + 1):
-                        for combo in itertools.combinations(available_keys, r):
-                            obs_masked = jax.tree_map(lambda x: x, obs)
-                            
-                            # Mask all keys in the current combination
-                            for key in combo:
-                                obs_masked[key] = jnp.zeros(obs[key].shape, dtype=float)
+        dropped_residual_latent, _ = self.wm.rssm.obs_step(
+            prev_latent, prev_action, embed, is_first
+        )
+        truth, reconstruct_post_dropped, reconstruct_post = self.get_recon_imgs(
+            obs, dropped_residual_latent, latent, image_key
+        )
+        prior_img = self.get_single_recon(prior_orig, image_key)
 
-                            # Encode and compute surprise
-                            embed = self.wm.encoder(obs_masked)
-                            temp_latent, temp_prior_orig = self.wm.rssm.obs_step(
-                                prev_latent, prev_action, embed, obs['is_first']
-                            )
-                            surprise = self.wm.rssm.get_dist(temp_latent).kl_divergence(
-                                self.wm.rssm.get_dist(temp_prior_orig)
-                            )
+        tau = self.config.run.reject_tau
+        recon_score = jnp.mean(jnp.abs(obs[image_key] - reconstruct_post_dropped))
 
-                            surprises.append(surprise)
-                            total_newlat_seperate.append(temp_latent)
-                else: #Run N version
-                    for ite, image_key in enumerate(available_keys): #Keeps only one sensor at a time:
-                        # Start with all observations as zeros
-                        obs_masked = jax.tree_map(lambda x: jnp.zeros_like(x), obs)
-                        
-                        # Keep only the current image_key unmasked (use original data)
-                        obs_masked[image_key] = obs[image_key]
-                        
-                        embed = self.wm.encoder(obs_masked)
-
-                        temp_latent, temp_prior_orig = self.wm.rssm.obs_step(
-                            prev_latent, prev_action, embed, obs['is_first'])
-
-                        surprise = self.wm.rssm.get_dist(temp_latent).kl_divergence(
-                            self.wm.rssm.get_dist(temp_prior_orig))
-
-                        surprises.append(surprise)
-                        total_newlat_seperate.append(temp_latent)
-
-                    #Sort sensors by surprise (lowest surprise first)
-                    surprises_init = jnp.array(surprises)
-                    surprises_init = surprises_init.flatten()
-                    sorted_indices = jnp.argsort(surprises_init, descending=True)
-
-                    #Create N more latents by iteratively masking according to the order of sorted indices:
-                    obs_iter = tree_map(lambda x: x, obs)
-                    for i in range(len(sorted_indices[:self.config.run.surprise_depth])):
-                        idx = sorted_indices[i] # 
-                        # Use conditional masking for each key based on sorted order
-                        for j, key_name in enumerate(available_keys):
-                            # Check if this key should be masked at this step (idx matches the key's position)
-                            should_mask = (idx == j)
-                            obs_iter[key_name] = jnp.where(
-                                should_mask,
-                                jnp.zeros_like(obs_iter[key_name]),
-                                obs_iter[key_name]
-                            )
-                        
-                        embed = self.wm.encoder(obs_iter)
-                        temp_latent, temp_prior_orig = self.wm.rssm.obs_step(
-                            prev_latent, prev_action, embed, obs['is_first'])
-                        surprise = self.wm.rssm.get_dist(temp_latent).kl_divergence(
-                            self.wm.rssm.get_dist(temp_prior_orig))
-                        
-                        surprises.append(surprise)
-                        total_newlat_seperate.append(temp_latent)
-                
-                total_newlat_seperate.append(latent)
-                surprises.append(base_surprise)
-                # Find index of minimum surprise
-                surprises = jnp.array(surprises)
-                min_idx = jnp.argmin(surprises)
-                
-                # Stack candidates and select using advanced indexing
-                stacked_latents = jax.tree_map(
-                    lambda *candidates: jnp.stack(candidates, axis=0),
-                    *total_newlat_seperate
-                )
-            
-                # Select the latent with lowest surprise
-                latent = jax.tree_map(
-                    lambda stacked: stacked[min_idx],
-                    stacked_latents
-                )
-                latent = {k: v[min_idx] for k, v in stacked_latents.items() if k != "image_key"} # I dont think this does anything.
-
-            elif 'random' in mode: # mode == 'random':
-                k = py_rand.randint(0, len(available_keys))  # actual number of keys chosen
-                chosen_keys = py_rand.sample(available_keys, k)
-                obs_masked = jax.tree_map(lambda x: x, obs)
-                for ite, image_key in enumerate(chosen_keys):
-                    obs_masked[image_key] = jnp.zeros(obs[image_key].shape, dtype=float)
-                embed = self.wm.encoder(obs_masked)
-                latent, temp_prior_orig = self.wm.rssm.obs_step(
-                    prev_latent, prev_action, embed, obs['is_first'])
-                
-            elif 'reject' in mode:
-                # Smart gradient-based dropout instead of brute force search
-                surprises = []
-                total_newlat_seperate = []
-                # First, get baseline surprise with original observation
-                base_surprise = self.wm.rssm.get_dist(latent).kl_divergence(self.wm.rssm.get_dist(prior_orig))
-                # Get image key
-                image_key = self.wm.config.encoder.cnn_keys#[0]
-    
-                batch_size = 1  # or however you determine batch size
-                is_first = jnp.ones((batch_size,), dtype=jnp.float32)
-                
-                #P(z|x,h_0)
-                dropped_residual_latent, dropped_prior_orig = self.wm.rssm.obs_step(
-                    prev_latent, prev_action, embed, is_first
-                )
-                #X_po = E[P(x|z_t,h_0)] where z_t ~ P(z|x,h_0)
-                truth, reconstruct_post_dropped, reconstruct_post = self.get_recon_imgs(obs, dropped_residual_latent, latent, image_key)
-                prior_img = self.get_single_recon(prior_orig, image_key)
-
-                #Check if the image looks clean
-                #||X_t - X_po||
-                tau = self.config.run.reject_tau 
-                recon_score = jnp.mean(jnp.abs(obs[image_key] - reconstruct_post_dropped))
-                ablation_m = self.config.run.off_shelf_mx #True or false.
-                
-                if self.config.run.denoise_method == 'denoiser':
-                    interpolated_img = obs['denoised']
-                elif self.config.run.denoise_method == 'interpolate':
-                    interpolated_img = self.interpolate(prev_latent,prev_action,obs,image_key,prior_orig)
-                else: #Default
-                    interpolated_img = reconstruct_post
-
-                if ablation_m == False:
-                    condition = recon_score < tau
-                else:#ABLATION M(X):
-                    condition = base_surprise[0] < tau #obs['mx'][0]
-                
-
-                sampled_obs = tree_map(lambda x: x, obs)
-                sampled_obs[image_key] = interpolated_img
-                interpolated_img = jnp.array(interpolated_img)
-
-                embed = self.wm.encoder(sampled_obs)
-                interpolated_img_post_dropped, temp_prior_orig_dropped = self.wm.rssm.obs_step(
-                    prev_latent, prev_action, embed, is_first
-                )
-                
-                recon_interpolated_img_dropped = self.get_single_recon(interpolated_img_post_dropped,image_key)
-
-                interpolated_img_post, temp_prior_orig = self.wm.rssm.obs_step(
-                    prev_latent, prev_action, embed, obs['is_first']
-                )
-                recon_interpolated_img = self.get_single_recon(interpolated_img_post,image_key)
-
-                #M(\bar{X})
-                recon_score_2 = jnp.mean(jnp.abs(interpolated_img - recon_interpolated_img_dropped))
-                condition_2 = recon_score_2 < tau
-
-                #Does h_t align with x_bar?
-                recon_score_3 = jnp.mean(jnp.abs(interpolated_img - recon_interpolated_img))
-                condition_3 = recon_score_3 < tau
-                latent, action_latent, stage = jax.lax.cond(
-                    stage == jnp.array(0),
-                    # When stage == 0
-                    lambda: jax.lax.cond(
-                        condition,  # If truth is good keep using.
-                        lambda: (latent, latent, jnp.array(0)),
-                        lambda: jax.lax.cond(
-                            jnp.logical_and(condition_3, condition_2),  # Does h_t align with x_bar? Can we at least use x_bar?
-                            lambda: (interpolated_img_post, interpolated_img_post, jnp.array(1)), #(prior_orig, interpolated_img_post, jnp.array(1)),
-                            lambda: (prior_orig, prior_orig, jnp.array(2))
-                        )
-                    ),
-                    # When stage != 0 (assuming stage == 1)
-                    lambda: jax.lax.cond(
-                        condition,  # Can we recover to x_t
-                        lambda: (dropped_residual_latent, dropped_residual_latent, jnp.array(0)),
-                        lambda: jax.lax.cond(
-                            jnp.logical_and(condition_3, condition_2),  # Does h_t still align with x_bar?
-                            lambda: (interpolated_img_post, interpolated_img_post, jnp.array(3)),
-                            lambda: jax.lax.cond(  # h_t and x_bar are different, can we recover to x_bar?
-                                condition_2,
-                                lambda: (interpolated_img_post_dropped, interpolated_img_post_dropped, jnp.array(4)),
-                                lambda: (prior_orig, prior_orig, jnp.array(5))
-                            )
-                        )
-                    )
-                )
-
-                
-        
-                video = jnp.concatenate([truth, prior_img, reconstruct_post, reconstruct_post_dropped, interpolated_img], axis=2)
-                
-            elif 'filter' in mode:
-                # Smart gradient-based dropout instead of brute force search
-                surprises = []
-                total_newlat_seperate = []
-                # First, get baseline surprise with original observation
-                base_surprise = self.wm.rssm.get_dist(latent).kl_divergence(self.wm.rssm.get_dist(prior_orig))
-
-                def median_blur(image: jnp.ndarray, ksize: int) -> jnp.ndarray:
-                    """
-                    Apply median blur to a batch of images (NHWC format).
-
-                    Args:
-                        image: jnp.ndarray of shape (N, H, W, C)
-                        ksize: odd integer kernel size (e.g. 3, 5, 7)
-
-                    Returns:
-                        Blurred image of same shape as input.
-                    """
-                    assert ksize % 2 == 1, "ksize must be odd"
-                    pad = ksize // 2
-                    N, H, W, C = image.shape
-
-                    # Pad with reflect to mimic OpenCV behavior
-                    padded = jnp.pad(
-                        image, ((0, 0), (pad, pad), (pad, pad), (0, 0)), mode="reflect"
-                    )
-
-                    # Extract patches using dynamic slicing
-                    def get_patch(n, i, j):
-                        return jax.lax.dynamic_slice(
-                            padded, (n, i, j, 0), (1, ksize, ksize, C)
-                        ).reshape(-1, C)
-
-                    # Meshgrid over image coords
-                    ii, jj = jnp.meshgrid(jnp.arange(H), jnp.arange(W), indexing="ij")
-
-                    # Vectorize over batch, height, width
-                    patches = jax.vmap(
-                        lambda n: jax.vmap(
-                            lambda i_row, j_row: jax.vmap(
-                                get_patch, in_axes=(None, 0, 0)
-                            )(n, i_row, j_row),
-                            in_axes=(0, 0),
-                        )(ii, jj),
-                        in_axes=(0,),
-                    )(jnp.arange(N))  # (N, H, W, ksize*ksize, C)
-
-                    # Take median across neighborhood axis
-                    result = jnp.median(patches, axis=3)  # (N, H, W, C)
-                    return result
-                
-                # Get image key
-                image_key = self.wm.config.encoder.cnn_keys#[0]
-
-                obs[image_key] = median_blur(obs[image_key],ksize=3)
-                embed = self.wm.encoder(obs)
-                temp_latent, temp_prior_orig = self.wm.rssm.obs_step(
-                    prev_latent, prev_action, embed, obs['is_first']
-                )
-                latent = temp_latent
-
-        if mode == 'reject':
-            self.expl_behavior.policy(action_latent, expl_state)
-            task_outs, task_state = self.task_behavior.policy(action_latent, task_state)
-            expl_outs, expl_state = self.expl_behavior.policy(action_latent, expl_state)
-            
+        denoise_method = getattr(self.config.run, "denoise_method", "")
+        if denoise_method == "denoiser" and "denoised" in obs:
+            interpolated_img = obs["denoised"]
+        elif denoise_method == "interpolate":
+            interpolated_img = self.interpolate(
+                prev_latent, prev_action, obs, image_key, prior_orig
+            )
         else:
-            self.expl_behavior.policy(latent, expl_state)
-            task_outs, task_state = self.task_behavior.policy(latent, task_state)
-            expl_outs, expl_state = self.expl_behavior.policy(latent, expl_state)
+            interpolated_img = reconstruct_post
 
-        def reshape_outputs(surprises_dict):
-            reshaped = {}
-            for k, v in surprises_dict.items():
-                if k.startswith('log_surprise'):
-                    # reshape scalar [] or any shape to [1]
-                    reshaped[k] = jnp.reshape(v, (1,))
-                if k.startswith('mu_gradients'):
-                    reshaped[k] = jnp.reshape(v, (1,))
-                else:
-                    reshaped[k] = v
-            return reshaped
+        condition_1 = recon_score < tau
+
+        sampled_obs = obs.copy()
+        sampled_obs[image_key] = interpolated_img
+        embed = self.wm.encoder(sampled_obs)
+
+        interpolated_img_post_dropped, _ = self.wm.rssm.obs_step(
+            prev_latent, prev_action, embed, is_first
+        )
+        recon_interpolated_img_dropped = self.get_single_recon(
+            interpolated_img_post_dropped, image_key
+        )
+
+        interpolated_img_post, _ = self.wm.rssm.obs_step(
+            prev_latent, prev_action, embed, obs["is_first"]
+        )
+        recon_interpolated_img = self.get_single_recon(interpolated_img_post, image_key)
+
+        recon_score_2 = jnp.mean(
+            jnp.abs(interpolated_img - recon_interpolated_img_dropped)
+        )
+        condition_2 = recon_score_2 < tau
+
+        recon_score_3 = jnp.mean(jnp.abs(interpolated_img - recon_interpolated_img))
+        condition_3 = recon_score_3 < tau
+
+        latent, action_latent, stage = jax.lax.cond(
+            stage == jnp.array(0, dtype=jnp.int32),
+            lambda: jax.lax.cond(
+                condition_1,
+                lambda: (latent, latent, jnp.array(0, dtype=jnp.int32)),
+                lambda: jax.lax.cond(
+                    jnp.logical_and(condition_3, condition_2),
+                    lambda: (
+                        interpolated_img_post,
+                        interpolated_img_post,
+                        jnp.array(1, dtype=jnp.int32),
+                    ),
+                    lambda: (prior_orig, prior_orig, jnp.array(2, dtype=jnp.int32)),
+                ),
+            ),
+            lambda: jax.lax.cond(
+                condition_1,
+                lambda: (
+                    dropped_residual_latent,
+                    dropped_residual_latent,
+                    jnp.array(0, dtype=jnp.int32),
+                ),
+                lambda: jax.lax.cond(
+                    jnp.logical_and(condition_3, condition_2),
+                    lambda: (
+                        interpolated_img_post,
+                        interpolated_img_post,
+                        jnp.array(3, dtype=jnp.int32),
+                    ),
+                    lambda: jax.lax.cond(
+                        condition_2,
+                        lambda: (
+                            interpolated_img_post_dropped,
+                            interpolated_img_post_dropped,
+                            jnp.array(4, dtype=jnp.int32),
+                        ),
+                        lambda: (prior_orig, prior_orig, jnp.array(5, dtype=jnp.int32)),
+                    ),
+                ),
+            ),
+        )
+
+        video = jnp.concatenate(
+            [
+                truth,
+                prior_img,
+                reconstruct_post,
+                reconstruct_post_dropped,
+                interpolated_img,
+            ],
+            axis=2,
+        )
+
+        details = {
+            "image_key": image_key,
+            "video": video,
+            "condition_1": recon_score,
+            "condition_2": recon_score_2,
+            "condition_3": recon_score_3,
+        }
+        return latent, action_latent, stage, details
+
+    def _apply_mode_transform(
+        self,
+        mode,
+        obs,
+        prev_latent,
+        prev_action,
+        latent,
+        prior_orig,
+        stage,
+    ):
+        mode_details = {}
+        action_latent = latent
+
+        if mode in BASE_POLICY_MODES:
+            return latent, action_latent, jnp.array(0, dtype=jnp.int32), mode_details
+        if "surprise" in mode:
+            latent = self._surprise_mode_latent(
+                mode,
+                obs,
+                prev_latent,
+                prev_action,
+                latent,
+                prior_orig,
+            )
+            return latent, action_latent, jnp.array(0, dtype=jnp.int32), mode_details
+        if "reject" in mode:
+            return self._reject_mode_latent(
+                obs,
+                prev_latent,
+                prev_action,
+                latent,
+                prior_orig,
+                stage,
+            )
+
+        raise ValueError(f"Unsupported policy mode: {mode}")
+
+    def policy(self, obs, state, mode="train"):
+        obs = self.preprocess(obs)
+        (prev_latent, prev_action), task_state, expl_state, stage = state if len(state) == 4 else (*state, jnp.array(0, dtype=jnp.int32))
+
+        embed = self.wm.encoder(obs)
+        latent, prior_orig = self.wm.rssm.obs_step(
+            prev_latent, prev_action, embed, obs["is_first"]
+        )
+
+        latent, action_latent, stage, mode_details = self._apply_mode_transform(
+            mode,
+            obs,
+            prev_latent,
+            prev_action,
+            latent,
+            prior_orig,
+            stage,
+        )
+
+        behavior_latent = action_latent if mode == "reject" else latent
+        task_outs, task_state = self.task_behavior.policy(behavior_latent, task_state)
+        expl_outs, expl_state = self.expl_behavior.policy(behavior_latent, expl_state)
 
         if mode == "eval":
             outs = task_outs
             outs["action"] = outs["action"].sample(seed=nj.rng())
             outs["log_entropy"] = jnp.zeros(outs["action"].shape[:1])
-            surprise = lambda post, prior: self.wm.rssm.get_dist(post).kl_divergence(
-                self.wm.rssm.get_dist(prior)
+
+            image_key = self._primary_image_key(obs)
+            truth, reconstruct_post, prior_img = self.get_recon_imgs(
+                obs, latent, prior_orig, image_key
             )
-            image_key = 'birdeye_wpt'
-            truth, reconstruct_post, prior_img  = self.get_recon_imgs(obs, latent, prior_orig, image_key)
             video = jnp.concatenate([truth, prior_img, reconstruct_post], axis=2)
             video = jnp.expand_dims(video, 0)
-            # metrics = {}
-            # outs.update({f"openl_{key}" : jaxutils.video_grid(video)})
-            # outs.update(jaxutils.tensorstats(surprise(latent, prior_orig), "log_surprise"))
-            # print(outs)
-
-            outs = reshape_outputs(outs)
-            print({k: v.shape for k, v in outs.items()})
-
-            outs.update({f"openl_custom_{image_key}" : jaxutils.video_grid(video)})
-
+            outs.update({f"openl_custom_{image_key}": jaxutils.video_grid(video)})
         elif mode == "explore":
             outs = expl_outs
             outs["log_entropy"] = outs["action"].entropy()
@@ -427,29 +410,30 @@ class Agent(nj.Module):
             outs = task_outs
             outs["log_entropy"] = outs["action"].entropy()
             outs["action"] = outs["action"].sample(seed=nj.rng())
-        else: #Run eval by default
+        else:
             outs = task_outs
-            if mode in ['sample','reject']:
-                video = jnp.expand_dims(video, 0)
-                # interpolated_img = jnp.expand_dims(interpolated_img, 0)
-                # mean_gradients = reshape_outputs({"mu_gradients": mean_gradients})["mu_gradients"]
-                # outs.update({f"openl_custom_interpolated_{image_key}": jaxutils.video_grid(interpolated_img)})
-                outs.update({f"openl_custom_{image_key}" : jaxutils.video_grid(video)})
-                print(stage, recon_score, recon_score_2, recon_score_3)
-                outs.update({f"stages":jnp.reshape(stage, (1,))})
-                outs.update({f"condition_1":jnp.reshape(recon_score, (1,))})
-                outs.update({f"condition_2":jnp.reshape(recon_score_2, (1,))})
-                outs.update({f"condition_3":jnp.reshape(recon_score_3, (1,))})
-
+            if mode == "reject":
+                image_key = mode_details["image_key"]
+                video = jnp.expand_dims(mode_details["video"], 0)
+                outs.update({f"openl_custom_{image_key}": jaxutils.video_grid(video)})
+                outs.update({"stages": jnp.reshape(stage, (1,))})
+                outs.update(
+                    {"condition_1": jnp.reshape(mode_details["condition_1"], (1,))}
+                )
+                outs.update(
+                    {"condition_2": jnp.reshape(mode_details["condition_2"], (1,))}
+                )
+                outs.update(
+                    {"condition_3": jnp.reshape(mode_details["condition_3"], (1,))}
+                )
 
             outs["action"] = outs["action"].sample(seed=nj.rng())
             outs["log_entropy"] = jnp.zeros(outs["action"].shape[:1])
 
-        state = ((latent, outs["action"]), task_state, expl_state, stage, step)
+        state = ((latent, outs["action"]), task_state, expl_state, stage)
         return outs, state
 
     def train(self, data, state):
-        self.config.jax.jit and print("Tracing train function.")
         metrics = {}
         data = self.preprocess(data)
         state, wm_outs, mets = self.wm.train(data, state)
@@ -480,7 +464,6 @@ class Agent(nj.Module):
         return outs, state, metrics
 
     def report(self, data):
-        self.config.jax.jit and print("Tracing report function.")
         data = self.preprocess(data)
         report = {}
         report.update(self.wm.report(data))
@@ -534,171 +517,96 @@ class WorldModel(nj.Module):
 
     def train(self, data, state):
         modules = [self.encoder, self.rssm, *self.heads.values()]
-        mets, (state, outs, metrics) = self.opt(modules, self.loss, data, state, has_aux=True)
+        mets, (state, outs, metrics) = self.opt(
+            modules, self.loss, data, state, has_aux=True
+        )
         metrics.update(mets)
         return state, outs, metrics
-    
+
     def randomly_mask_images_per_timestep(self, data, key, mask_value=0.0):
         """
         Randomly mask 0 to n-1 images for each timestep, ensuring at least one image remains unmasked.
-        
+
         Args:
             data: Dictionary containing the dataset with image keys
             key: JAX random key
             mask_value: Value to use for masked pixels (default: 0.0)
-        
+
         Returns:
             Modified data dictionary with randomly masked images
         """
         # Create a copy of the data to avoid modifying the original
         masked_data = data.copy()
-        
-        # Image keys to process
-        image_keys = [
-            "birdeye_gt",
-            "birdeye_raw",
-            "birdeye_with_traffic_lights",
-            "birdeye_wpt",
-            "camera",
-            "lidar"
-        ]
-        available_keys = [k for k in image_keys if k in data]
-        # print('Loss on Keys: ',available_keys)
+
+        available_keys = [k for k in IMAGE_OBS_KEYS if k in data]
         if len(available_keys) == 0:
             return masked_data
-        
+
         n_images = len(available_keys)
-        batch_size, seq_len = data[available_keys[0]].shape[0], data[available_keys[0]].shape[1]  # 16, 64
-        
+        batch_size, seq_len = (
+            data[available_keys[0]].shape[0],
+            data[available_keys[0]].shape[1],
+        )  # 16, 64
+
         # Split keys
         key1, key2 = random.split(key)
-        
+
         # For each (batch, timestep), randomly choose how many images to mask (0 to n-1)
-        num_to_mask = random.randint(key1, shape=(batch_size, seq_len), minval=0, maxval=n_images)
-        
+        num_to_mask = random.randint(
+            key1, shape=(batch_size, seq_len), minval=0, maxval=n_images
+        )
+
         # Generate random values for each image at each (batch, timestep)
         # Shape: [batch_size, seq_len, n_images]
         random_vals = random.uniform(key2, shape=(batch_size, seq_len, n_images))
-        
+
         # Sort the random values to get rankings (0 = smallest, n_images-1 = largest)
         rankings = jnp.argsort(random_vals, axis=-1)
-        
+
         # Create a mask where we mask images with ranking < num_to_mask
         # This gives us a random selection of num_to_mask images
         mask_matrix = jnp.zeros((batch_size, seq_len, n_images), dtype=bool)
-        
+
         for i in range(n_images):
             # For each image position, check if its ranking is less than num_to_mask
-            image_rank = jnp.where(rankings == i, 
-                                jnp.arange(n_images)[None, None, :], 
-                                n_images)  # Set to n_images if not this image
+            image_rank = jnp.where(
+                rankings == i, jnp.arange(n_images)[None, None, :], n_images
+            )  # Set to n_images if not this image
             min_rank = jnp.min(image_rank, axis=-1)  # Get the ranking for image i
             should_mask = min_rank < num_to_mask
             mask_matrix = mask_matrix.at[:, :, i].set(should_mask)
-        
+
         # Apply masks to each image
         for i, img_key in enumerate(available_keys):
             images = data[img_key]
-            
+
             # Expand mask to match image dimensions
             mask = mask_matrix[:, :, i].reshape(batch_size, seq_len, 1, 1, 1)
-            
+
             # Apply mask: where mask is True, replace with mask_value
             masked_images = jnp.where(mask, mask_value, images)
-            
+
             # Update the data dictionary
             masked_data[img_key] = masked_images
-            # print('Masking...')
-        
-        return masked_data
-  
-    def randomly_noise_images_per_timestep(self, data, key, mask_value=0.0):
-        """
-        Randomly mask 0 to n-1 images for each timestep, ensuring at least one image remains unmasked.
-        
-        Args:
-            data: Dictionary containing the dataset with image keys
-            key: JAX random key
-            mask_value: Value to use for masked pixels (default: 0.0)
-        
-        Returns:
-            Modified data dictionary with randomly masked images
-        """
-        # Create a copy of the data to avoid modifying the original
-        masked_data = data.copy()
-        
-        # Image keys to process
-        image_keys = [
-            "birdeye_gt",
-            "birdeye_raw",
-            "birdeye_with_traffic_lights",
-            "birdeye_wpt",
-            "camera",
-            "lidar"
-        ]
-        
-        available_keys = [k for k in image_keys if k in data]
-        
-        if len(available_keys) == 0:
-            return masked_data
-        
-        n_images = len(available_keys)
-        batch_size, seq_len = data[available_keys[0]].shape[0], data[available_keys[0]].shape[1]  # 16, 64
-        
-        # Split keys
-        key1, key2 = random.split(key)
-        
-        # For each (batch, timestep), randomly choose how many images to mask (0 to n-1)
-        num_to_mask = random.randint(key1, shape=(batch_size, seq_len), minval=0, maxval=n_images)
-        
-        # Generate random values for each image at each (batch, timestep)
-        # Shape: [batch_size, seq_len, n_images]
-        random_vals = random.uniform(key2, shape=(batch_size, seq_len, n_images))
-        
-        # Sort the random values to get rankings (0 = smallest, n_images-1 = largest)
-        rankings = jnp.argsort(random_vals, axis=-1)
-        
-        # Create a mask where we mask images with ranking < num_to_mask
-        # This gives us a random selection of num_to_mask images
-        mean = 20.0
-        std = 30.0
-        mask_matrix = mean + std * random.normal(key2, (batch_size, seq_len, n_images))  # mean=0, std=1 #jnp.zeros((batch_size, seq_len, n_images), dtype=bool)
-        
-        for i in range(n_images):
-            # For each image position, check if its ranking is less than num_to_mask
-            image_rank = jnp.where(rankings == i, 
-                                jnp.arange(n_images)[None, None, :], 
-                                n_images)  # Set to n_images if not this image
-            min_rank = jnp.min(image_rank, axis=-1)  # Get the ranking for image i
-            should_mask = min_rank < num_to_mask
-            mask_matrix = mask_matrix.at[:, :, i].set(should_mask)
-        
-        # Apply masks to each image
-        for i, img_key in enumerate(available_keys):
-            images = data[img_key]
-            
-            # Expand mask to match image dimensions
-            mask = mask_matrix[:, :, i].reshape(batch_size, seq_len, 1, 1, 1)
-            
-            # Apply mask: where mask is True, replace with mask_value
-            masked_images = jnp.where(mask, mask_value, images)
-            
-            # Update the data dictionary
-            masked_data[img_key] = masked_images
-            
-        
+
         return masked_data
 
     def loss(self, data, state):
         key = random.PRNGKey(42)
-        if self.config.run.dropout_training: # Set to true to do dropout representation training
+        if (
+            self.config.run.dropout_training
+        ):  # Set to true to do dropout representation training
             enc_data = self.randomly_mask_images_per_timestep(data, key, mask_value=0.0)
         else:
             enc_data = data
         embed = self.encoder(enc_data)
         prev_latent, prev_action = state
-        prev_actions = jnp.concatenate([prev_action[:, None], data["action"][:, :-1]], 1)
-        post, prior = self.rssm.observe(embed, prev_actions, data["is_first"], prev_latent)
+        prev_actions = jnp.concatenate(
+            [prev_action[:, None], data["action"][:, :-1]], 1
+        )
+        post, prior = self.rssm.observe(
+            embed, prev_actions, data["is_first"], prev_latent
+        )
         dists = {}
         feats = {**post, "embed": embed}
         for name, head in self.heads.items():
@@ -720,7 +628,9 @@ class WorldModel(nj.Module):
         last_action = data["action"][:, -1]
         state = last_latent, last_action
         metrics = self._metrics(data, dists, post, prior, losses, model_loss)
-        metrics["model_loss_raw"] = model_loss  # Store model loss for Curious Replay prioritization
+        metrics["model_loss_raw"] = (
+            model_loss  # Store model loss for Curious Replay prioritization
+        )
         return model_loss.mean(), (state, out, metrics)
 
     def imagine(self, policy, start, horizon):
@@ -758,7 +668,11 @@ class WorldModel(nj.Module):
             return {**state, "action": outs, "carry": carry}
 
         traj = jaxutils.scan(step, jnp.arange(horizon), start, self.config.imag_unroll)
-        traj = {k: jnp.concatenate([start[k][None], v], 0) for k, v in traj.items() if k != "carry"}
+        traj = {
+            k: jnp.concatenate([start[k][None], v], 0)
+            for k, v in traj.items()
+            if k != "carry"
+        }
         cont = self.heads["cont"](traj).mode()
         traj["cont"] = jnp.concatenate([first_cont[None], cont[1:]], 0)
         discount = 1 - 1 / self.config.horizon
@@ -769,7 +683,9 @@ class WorldModel(nj.Module):
         state = self.initial(len(data["is_first"]))
         report = {}
         report.update(self.loss(data, state)[-1][-1])
-        context, _ = self.rssm.observe(self.encoder(data)[:6, :5], data["action"][:6, :5], data["is_first"][:6, :5])
+        context, _ = self.rssm.observe(
+            self.encoder(data)[:6, :5], data["action"][:6, :5], data["is_first"][:6, :5]
+        )
         start = {k: v[:, -1] for k, v in context.items()}
         recon = self.heads["decoder"](context)
         openl = self.heads["decoder"](self.rssm.imagine(data["action"][:6, 5:], start))
@@ -819,7 +735,9 @@ class ImagActorCritic(nj.Module):
             **config.actor,
             dist=config.actor_dist_disc if disc else config.actor_dist_cont,
         )
-        self.retnorms = {k: jaxutils.Moments(**config.retnorm, name=f"retnorm_{k}") for k in critics}
+        self.retnorms = {
+            k: jaxutils.Moments(**config.retnorm, name=f"retnorm_{k}") for k in critics
+        }
         self.opt = jaxutils.Optimizer(name="actor_opt", **config.actor_opt)
 
     def initial(self, batch_size):
@@ -862,7 +780,9 @@ class ImagActorCritic(nj.Module):
 
         r = jnp.reshape(rew[0], (self.config.batch_size, self.config.batch_length))
         v = jnp.reshape(base[0], (self.config.batch_size, self.config.batch_length))
-        disc = jnp.reshape(traj["cont"][0], (self.config.batch_size, self.config.batch_length)) * (1 - 1 / self.config.horizon)
+        disc = jnp.reshape(
+            traj["cont"][0], (self.config.batch_size, self.config.batch_length)
+        ) * (1 - 1 / self.config.horizon)
         td_error = r[:, :-1] + disc[:, 1:] * v[:, 1:] - v[:, :-1]
         metrics["td_error"] = td_error  # Store TD error for PER prioritization
 
@@ -922,7 +842,9 @@ class VFunction(nj.Module):
         if self.config.critic_slowreg == "logprob":
             reg = -dist.log_prob(sg(self.slow(traj).mean()))
         elif self.config.critic_slowreg == "xent":
-            reg = -jnp.einsum("...i,...i->...", sg(self.slow(traj).probs), jnp.log(dist.probs))
+            reg = -jnp.einsum(
+                "...i,...i->...", sg(self.slow(traj).probs), jnp.log(dist.probs)
+            )
         else:
             raise NotImplementedError(self.config.critic_slowreg)
         loss += self.config.loss_scales.slowreg * reg
@@ -933,7 +855,9 @@ class VFunction(nj.Module):
 
     def score(self, traj, actor=None):
         rew = self.rewfn(traj)
-        assert len(rew) == len(traj["action"]) - 1, "should provide rewards for all but last action"
+        assert len(rew) == len(traj["action"]) - 1, (
+            "should provide rewards for all but last action"
+        )
         discount = 1 - 1 / self.config.horizon
         disc = traj["cont"][1:] * discount
         value = self.net(traj).mean()
