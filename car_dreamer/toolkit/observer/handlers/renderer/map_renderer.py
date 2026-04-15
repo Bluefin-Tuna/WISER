@@ -4,6 +4,7 @@ import carla
 import cv2
 import numpy as np
 
+from ....constants import get_stop_sign_ids_for_map
 from .constants import Color
 
 
@@ -55,20 +56,40 @@ def lateral_shift(transform: carla.Transform, shift: float) -> carla.Location:
 
 
 class MapRenderer:
-    def __init__(self, world: carla.World, map: carla.Map, pixels_per_meter: float):
+    def __init__(
+        self,
+        world: carla.World,
+        map: carla.Map,
+        pixels_per_meter: float,
+        ood: bool = True,
+    ):
         self._world = world
         self._map = map
         self._pixels_per_meter = pixels_per_meter
+        self._ood = ood
+        self._stop_sign_ids = get_stop_sign_ids_for_map(getattr(self._map, "name", ""))
         self._scale = 1.0
         self._precision = 0.05
         self._topology = self._map.get_topology()
 
         waypoints = map.generate_waypoints(2)
         margin = 50
-        max_x = max(waypoints, key=lambda x: x.transform.location.x).transform.location.x + margin
-        max_y = max(waypoints, key=lambda x: x.transform.location.y).transform.location.y + margin
-        min_x = min(waypoints, key=lambda x: x.transform.location.x).transform.location.x - margin
-        min_y = min(waypoints, key=lambda x: x.transform.location.y).transform.location.y - margin
+        max_x = (
+            max(waypoints, key=lambda x: x.transform.location.x).transform.location.x
+            + margin
+        )
+        max_y = (
+            max(waypoints, key=lambda x: x.transform.location.y).transform.location.y
+            + margin
+        )
+        min_x = (
+            min(waypoints, key=lambda x: x.transform.location.x).transform.location.x
+            - margin
+        )
+        min_y = (
+            min(waypoints, key=lambda x: x.transform.location.y).transform.location.y
+            - margin
+        )
 
         self._font_size = self.world_to_pixel_width(1)
         self._font = cv2.FONT_HERSHEY_SIMPLEX
@@ -76,10 +97,16 @@ class MapRenderer:
         self._width_in_meter = max(max_x - min_x, max_y - min_y)
         self._world_offset_in_meter = (min_x, min_y)
         self._width_in_pixels = int(self._pixels_per_meter * self._width_in_meter)
-        self._surface = np.zeros((self._width_in_pixels, self._width_in_pixels, 3), dtype=np.uint8)
+        self._surface = np.zeros(
+            (self._width_in_pixels, self._width_in_pixels, 3), dtype=np.uint8
+        )
 
         self.render_topology()
         self.render_traffic_signs()
+
+    @property
+    def stop_sign_ids(self) -> Tuple[int, ...]:
+        return self._stop_sign_ids
 
     def render_topology(self, index=0):
         topology = self._topology
@@ -108,10 +135,16 @@ class MapRenderer:
             self.render_road_marking(waypoints)
 
     def render_road(self, waypoints: List[carla.Waypoint]):
-        road_left_side = [lateral_shift(w.transform, -w.lane_width * 0.5) for w in waypoints]
-        road_right_side = [lateral_shift(w.transform, w.lane_width * 0.5) for w in waypoints]
+        road_left_side = [
+            lateral_shift(w.transform, -w.lane_width * 0.5) for w in waypoints
+        ]
+        road_right_side = [
+            lateral_shift(w.transform, w.lane_width * 0.5) for w in waypoints
+        ]
         polygon = road_left_side + list(reversed(road_right_side))
-        polygon_pixel = np.array([self.world_to_pixel(x) for x in polygon], dtype=np.int32)
+        polygon_pixel = np.array(
+            [self.world_to_pixel(x) for x in polygon], dtype=np.int32
+        )
         if len(polygon) > 2:
             cv2.fillPoly(self._surface, [polygon_pixel], Color.ALUMINIUM_5)
             cv2.polylines(self._surface, [polygon_pixel], True, Color.ALUMINIUM_5, 5)
@@ -136,15 +169,21 @@ class MapRenderer:
         current_lane_marking = carla.LaneMarkingType.NONE
 
         for sample in waypoints:
-            lane_marking = sample.left_lane_marking if sign < 0 else sample.right_lane_marking
+            lane_marking = (
+                sample.left_lane_marking if sign < 0 else sample.right_lane_marking
+            )
             if lane_marking is None:
                 continue
 
             marking_type = lane_marking.type
             marking_color = lane_marking.color
+            if self._ood:
+                marking_color = carla.LaneMarkingColor.White
 
             if current_lane_marking != marking_type:
-                markings = self.get_lane_markings(previous_marking_type, previous_marking_color, temp_waypoints, sign)
+                markings = self.get_lane_markings(
+                    previous_marking_type, previous_marking_color, temp_waypoints, sign
+                )
                 current_lane_marking = marking_type
                 markings_list.extend(markings)
                 temp_waypoints = temp_waypoints[-1:]
@@ -153,14 +192,21 @@ class MapRenderer:
                 previous_marking_type = marking_type
                 previous_marking_color = marking_color
 
-        last_markings = self.get_lane_markings(previous_marking_type, previous_marking_color, temp_waypoints, sign)
+        last_markings = self.get_lane_markings(
+            previous_marking_type, previous_marking_color, temp_waypoints, sign
+        )
         markings_list.extend(last_markings)
 
         for marking_type, marking_color, marking_points in markings_list:
             if marking_type == carla.LaneMarkingType.Solid:
-                render_solid_line(self._surface, marking_color, False, marking_points, 5)
+                render_solid_line(
+                    self._surface, marking_color, False, marking_points, 5
+                )
             elif marking_type == carla.LaneMarkingType.Broken:
-                render_dotted_line(self._surface, marking_color, False, marking_points, 5)
+                dotted_color = Color.ALUMINIUM_2 if self._ood else marking_color
+                render_dotted_line(
+                    self._surface, dotted_color, False, marking_points, 5
+                )
 
     def get_lane_markings(
         self,
@@ -171,14 +217,31 @@ class MapRenderer:
     ) -> List[Tuple[carla.LaneMarkingType, Color, List[Tuple[int, int]]]]:
         margin = 0.25
         marking_1 = np.array(
-            [self.world_to_pixel(lateral_shift(w.transform, sign * w.lane_width * 0.5)) for w in waypoints],
+            [
+                self.world_to_pixel(
+                    lateral_shift(w.transform, sign * w.lane_width * 0.5)
+                )
+                for w in waypoints
+            ],
             dtype=np.int32,
         )
-        if marking_type == carla.LaneMarkingType.Broken or marking_type == carla.LaneMarkingType.Solid:
-            return [(marking_type, lane_marking_color_to_tango(marking_color), marking_1)]
+        if (
+            marking_type == carla.LaneMarkingType.Broken
+            or marking_type == carla.LaneMarkingType.Solid
+        ):
+            return [
+                (marking_type, lane_marking_color_to_tango(marking_color), marking_1)
+            ]
         else:
             marking_2 = np.array(
-                [self.world_to_pixel(lateral_shift(w.transform, sign * (w.lane_width * 0.5 + margin * 2))) for w in waypoints],
+                [
+                    self.world_to_pixel(
+                        lateral_shift(
+                            w.transform, sign * (w.lane_width * 0.5 + margin * 2)
+                        )
+                    )
+                    for w in waypoints
+                ],
                 dtype=np.int32,
             )
             if marking_type == carla.LaneMarkingType.SolidBroken:
@@ -237,9 +300,14 @@ class MapRenderer:
         return [(carla.LaneMarkingType.NONE, carla.LaneMarkingColor.Other, [])]
 
     def render_lanes(self, waypoints: List[carla.Waypoint]):
-        SHOULDER_COLOR = Color.ALUMINIUM_5
-        PARKING_COLOR = Color.ALUMINIUM_4
-        SIDEWALK_COLOR = Color.ALUMINIUM_3
+        if self._ood:
+            SHOULDER_COLOR = Color.BLACK
+            PARKING_COLOR = Color.BLACK
+            SIDEWALK_COLOR = Color.BLACK
+        else:
+            SHOULDER_COLOR = Color.ALUMINIUM_5
+            PARKING_COLOR = Color.ALUMINIUM_4
+            SIDEWALK_COLOR = Color.ALUMINIUM_3
 
         shoulder = [[], []]
         parking = [[], []]
@@ -272,11 +340,17 @@ class MapRenderer:
 
     def render_lane(self, lane: List[List[carla.Waypoint]], color: Color):
         for side in lane:
-            lane_left_side = [lateral_shift(w.transform, -w.lane_width * 0.5) for w in side]
-            lane_right_side = [lateral_shift(w.transform, w.lane_width * 0.5) for w in side]
+            lane_left_side = [
+                lateral_shift(w.transform, -w.lane_width * 0.5) for w in side
+            ]
+            lane_right_side = [
+                lateral_shift(w.transform, w.lane_width * 0.5) for w in side
+            ]
 
             polygon = lane_left_side + list(reversed(lane_right_side))
-            polygon_pixel = np.array([self.world_to_pixel(x) for x in polygon], dtype=np.int32)
+            polygon_pixel = np.array(
+                [self.world_to_pixel(x) for x in polygon], dtype=np.int32
+            )
 
             if len(polygon) > 2:
                 cv2.fillPoly(self._surface, [polygon_pixel], color)
@@ -287,7 +361,12 @@ class MapRenderer:
         stops = [actor for actor in actors if "stop" in actor.type_id]
         yields = [actor for actor in actors if "yield" in actor.type_id]
 
-        stop_font_surface = np.zeros((self._font_size * 2, self._font_size * 4, 3), dtype=np.uint8)
+        if self._ood and self._stop_sign_ids:
+            stops = [stop for stop in stops if stop.id in self._stop_sign_ids]
+
+        stop_font_surface = np.zeros(
+            (self._font_size * 2, self._font_size * 4, 3), dtype=np.uint8
+        )
         cv2.putText(
             stop_font_surface,
             "STOP",
@@ -299,7 +378,9 @@ class MapRenderer:
             cv2.LINE_AA,
         )
 
-        yield_font_surface = np.zeros((self._font_size * 2, self._font_size * 4, 3), dtype=np.uint8)
+        yield_font_surface = np.zeros(
+            (self._font_size * 2, self._font_size * 4, 3), dtype=np.uint8
+        )
         cv2.putText(
             yield_font_surface,
             "YIELD",
@@ -317,14 +398,18 @@ class MapRenderer:
         for ts_yield in yields:
             self.render_traffic_sign(ts_yield, yield_font_surface, Color.ORANGE_1)
 
-    def render_traffic_sign(self, actor: carla.Actor, font_surface: np.ndarray, trigger_color: Color):
+    def render_traffic_sign(
+        self, actor: carla.Actor, font_surface: np.ndarray, trigger_color: Color
+    ):
         transform = actor.get_transform()
         waypoint = self._map.get_waypoint(transform.location)
 
         angle = -waypoint.transform.rotation.yaw - 90.0
         font_surface = cv2.warpAffine(
             font_surface,
-            cv2.getRotationMatrix2D((font_surface.shape[1] // 2, font_surface.shape[0] // 2), angle, 1.0),
+            cv2.getRotationMatrix2D(
+                (font_surface.shape[1] // 2, font_surface.shape[0] // 2), angle, 1.0
+            ),
             (font_surface.shape[1], font_surface.shape[0]),
         )
         pixel_pos = self.world_to_pixel(waypoint.transform.location)
@@ -338,7 +423,12 @@ class MapRenderer:
         ] = font_surface
 
         forward_vector = carla.Location(waypoint.transform.get_forward_vector())
-        left_vector = carla.Location(-forward_vector.y, forward_vector.x, forward_vector.z) * waypoint.lane_width / 2 * 0.7
+        left_vector = (
+            carla.Location(-forward_vector.y, forward_vector.x, forward_vector.z)
+            * waypoint.lane_width
+            / 2
+            * 0.7
+        )
 
         line = [
             (waypoint.transform.location + (forward_vector * 1.5 + left_vector)),
@@ -353,9 +443,19 @@ class MapRenderer:
             5,
         )
 
-    def world_to_pixel(self, location: carla.Location, offset: Tuple[float, float] = (0, 0)) -> Tuple[int, int]:
-        x = self._scale * self._pixels_per_meter * (location.x - self._world_offset_in_meter[0])
-        y = self._scale * self._pixels_per_meter * (location.y - self._world_offset_in_meter[1])
+    def world_to_pixel(
+        self, location: carla.Location, offset: Tuple[float, float] = (0, 0)
+    ) -> Tuple[int, int]:
+        x = (
+            self._scale
+            * self._pixels_per_meter
+            * (location.x - self._world_offset_in_meter[0])
+        )
+        y = (
+            self._scale
+            * self._pixels_per_meter
+            * (location.y - self._world_offset_in_meter[1])
+        )
         return int(x - offset[0]), int(y - offset[1])
 
     def world_to_pixel_width(self, width: float) -> int:

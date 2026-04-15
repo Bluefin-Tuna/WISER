@@ -15,7 +15,6 @@ from .carla_left_turn_env import CarlaLeftTurnEnv
 from .carla_navigation_env import CarlaNavigationEnv
 from .carla_overtake_env import CarlaOvertakeEnv
 from .carla_right_turn_env import CarlaRightTurnEnv
-from .carla_right_turn_env_ood import CarlaRightTurnEnvOOD
 from .carla_right_turn_random_env import CarlaRightTurnRandomEnv
 from .carla_roundabout_env import CarlaRoundaboutEnv
 from .carla_stop_sign_env import CarlaStopSignEnv
@@ -81,7 +80,9 @@ def _register_envs():
         if file.endswith("env.py") and file != "__init__.py":
             file_name = file[:-3]
             class_name = toClassName(file_name)
-            exec(f"register(id='{class_name}-v0', entry_point='car_dreamer.{file_name}:{class_name}')")
+            exec(
+                f"register(id='{class_name}-v0', entry_point='car_dreamer.{file_name}:{class_name}')"
+            )
 
 
 _register_envs()

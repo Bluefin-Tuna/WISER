@@ -22,6 +22,7 @@ class BirdeyeRenderer:
         pixels_ahead_vehicle: int,
         sight_fov: Union[float, List[float], Tuple[float]],
         sight_range: Union[float, List[float], Tuple[float]],
+        ood: bool = True,
     ):
         self._pixels_per_meter = pixels_per_meter
         self._screen_size = screen_size
@@ -29,8 +30,15 @@ class BirdeyeRenderer:
         self._sight_fov = sight_fov
         self._sight_range = sight_range
         self._world_manager = world_manager
+        self._ood = ood
 
-        self._map_renderer = MapRenderer(world_manager.carla_world, world_manager.carla_map, pixels_per_meter)
+        self._map_renderer = MapRenderer(
+            world_manager.carla_world,
+            world_manager.carla_map,
+            pixels_per_meter,
+            ood=ood,
+        )
+        self._stop_sign_ids = self._map_renderer.stop_sign_ids
         self._world_to_pixel = self._map_renderer.world_to_pixel
         self._map_size = self._map_renderer._width_in_pixels
 
@@ -76,9 +84,17 @@ class BirdeyeRenderer:
         """Render the road map on the surface."""
         ego_transform = self._ego.get_transform()
         ego_location = self._world_to_pixel(ego_transform.location)
-        x_start, x_end = max(0, ego_location[0] - self._screen_size), min(self._map_size, ego_location[0] + self._screen_size)
-        y_start, y_end = max(0, ego_location[1] - self._screen_size), min(self._map_size, ego_location[1] + self._screen_size)
-        self._surface[y_start:y_end, x_start:x_end, :] = self._map_renderer._surface[y_start:y_end, x_start:x_end, :]
+        x_start, x_end = (
+            max(0, ego_location[0] - self._screen_size),
+            min(self._map_size, ego_location[0] + self._screen_size),
+        )
+        y_start, y_end = (
+            max(0, ego_location[1] - self._screen_size),
+            min(self._map_size, ego_location[1] + self._screen_size),
+        )
+        self._surface[y_start:y_end, x_start:x_end, :] = self._map_renderer._surface[
+            y_start:y_end, x_start:x_end, :
+        ]
 
     def _render_ego_vehicle(self, **env_state):
         """Render the ego actor on the surface."""
@@ -91,7 +107,9 @@ class BirdeyeRenderer:
         ego_transform = self._ego.get_transform()
         surface = self._surface
 
-        sight_fov, sight_range = get_sight_fov_and_range(self._sight_fov, self._sight_range)
+        sight_fov, sight_range = get_sight_fov_and_range(
+            self._sight_fov, self._sight_range
+        )
         forward_fov, backward_fov = sight_fov
         forward_range, backward_range = sight_range
 
@@ -109,8 +127,14 @@ class BirdeyeRenderer:
             left_rad = math.radians(left_fov_yaw)
             right_rad = math.radians(right_fov_yaw)
 
-            left_endpoint = (ego_location.x + sight_distance * math.cos(left_rad), ego_location.y + sight_distance * math.sin(left_rad))
-            right_endpoint = (ego_location.x + sight_distance * math.cos(right_rad), ego_location.y + sight_distance * math.sin(right_rad))
+            left_endpoint = (
+                ego_location.x + sight_distance * math.cos(left_rad),
+                ego_location.y + sight_distance * math.sin(left_rad),
+            )
+            right_endpoint = (
+                ego_location.x + sight_distance * math.cos(right_rad),
+                ego_location.y + sight_distance * math.sin(right_rad),
+            )
 
             left_pixel = self._world_to_pixel(carla.Location(*left_endpoint))
             right_pixel = self._world_to_pixel(carla.Location(*right_endpoint))
@@ -125,11 +149,21 @@ class BirdeyeRenderer:
             # Draw arc with multiple small lines
             num_segments = max(20, int(fov_angle / 5))
             for i in range(num_segments):
-                angle1 = math.radians(start_angle + (end_angle - start_angle) * i / num_segments)
-                angle2 = math.radians(start_angle + (end_angle - start_angle) * (i + 1) / num_segments)
+                angle1 = math.radians(
+                    start_angle + (end_angle - start_angle) * i / num_segments
+                )
+                angle2 = math.radians(
+                    start_angle + (end_angle - start_angle) * (i + 1) / num_segments
+                )
 
-                pt1 = (ego_pixel[0] + int(radius_pixels * math.cos(angle1)), ego_pixel[1] + int(radius_pixels * math.sin(angle1)))
-                pt2 = (ego_pixel[0] + int(radius_pixels * math.cos(angle2)), ego_pixel[1] + int(radius_pixels * math.sin(angle2)))
+                pt1 = (
+                    ego_pixel[0] + int(radius_pixels * math.cos(angle1)),
+                    ego_pixel[1] + int(radius_pixels * math.sin(angle1)),
+                )
+                pt2 = (
+                    ego_pixel[0] + int(radius_pixels * math.cos(angle2)),
+                    ego_pixel[1] + int(radius_pixels * math.sin(angle2)),
+                )
 
                 cv2.line(surface, pt1, pt2, color, 1)
 
@@ -145,15 +179,20 @@ class BirdeyeRenderer:
         You must provide 'ego_waypoints'.
         """
         if "dest_x" in env_state:
-            dest_start = carla.Location(x=env_state["dest_x"], y=self._ego.get_transform().location.y - 16)
+            dest_start = carla.Location(
+                x=env_state["dest_x"], y=self._ego.get_transform().location.y - 16
+            )
             dest_start = self._world_to_pixel(dest_start)
-            dest_end = carla.Location(x=env_state["dest_x"], y=self._ego.get_transform().location.y + 10)
+            dest_end = carla.Location(
+                x=env_state["dest_x"], y=self._ego.get_transform().location.y + 10
+            )
             dest_end = self._world_to_pixel(dest_end)
             cv2.line(self._surface, dest_start, dest_end, Color.SKY_BLUE_0, 6)
         color = env_state.get("waypoints_color", Color.BLUE)
         ego_waypoints = env_state["ego_waypoints"]
         ego_polygon = self._world_manager.actor_polygons[self._ego.id]
-        self._render_path(self._surface, ego_polygon, ego_waypoints, color)
+        if not self._ood:
+            self._render_path(self._surface, ego_polygon, ego_waypoints, color)
 
     def _render_background_vehicles(self, **env_state):
         """Render the background vehicles on the surface."""
@@ -177,7 +216,10 @@ class BirdeyeRenderer:
         extend_waypoints = env_state.get("extend_waypoints", False)
         background_waypoints = self._world_manager.actor_actions
         background_waypoints = {
-            id: [(action[1].transform.location.x, action[1].transform.location.y) for action in actions]
+            id: [
+                (action[1].transform.location.x, action[1].transform.location.y)
+                for action in actions
+            ]
             for id, actions in background_waypoints.items()
             if actions
         }
@@ -207,14 +249,20 @@ class BirdeyeRenderer:
         error_rate = env_state.get("error_rate")
         background_waypoints = self._world_manager.actor_actions
         background_waypoints = {
-            id: [(action[1].transform.location.x, action[1].transform.location.y) for action in actions]
+            id: [
+                (action[1].transform.location.x, action[1].transform.location.y)
+                for action in actions
+            ]
             for id, actions in background_waypoints.items()
             if actions
         }
         vehicle_polygons = self._world_manager.actor_polygons
 
         for vehicle_id, path in background_waypoints.items():
-            if vehicle_id == self._ego.id or should_filter(self._ego.get_transform(), self._world_manager.actor_transforms[vehicle_id]):
+            if vehicle_id == self._ego.id or should_filter(
+                self._ego.get_transform(),
+                self._world_manager.actor_transforms[vehicle_id],
+            ):
                 continue
             vehicle_polygon = vehicle_polygons.get(vehicle_id, None)
             if vehicle_polygon is None:
@@ -238,7 +286,9 @@ class BirdeyeRenderer:
         def render_character(location, message, message_color):
             font_scale, font_thickness = 3, 2
             pixel = self._world_to_pixel(location)
-            text_size = cv2.getTextSize(message, self._font, font_scale, font_thickness)[0]
+            text_size = cv2.getTextSize(
+                message, self._font, font_scale, font_thickness
+            )[0]
             # Adjusting position to center the text
             text_x = pixel[0] - text_size[0] // 2
             text_y = pixel[1] + text_size[1] // 2
@@ -266,7 +316,9 @@ class BirdeyeRenderer:
                 render_character(location, message, message_color)
 
         background_messages = self._world_manager.actor_actions
-        background_messages = {id: actions[0][0] for id, actions in background_messages.items() if actions}
+        background_messages = {
+            id: actions[0][0] for id, actions in background_messages.items() if actions
+        }
 
         for vehicle_id, message in background_messages.items():
             if vehicle_id == self._ego.id or should_filter(
@@ -309,11 +361,19 @@ class BirdeyeRenderer:
         world_pos = traffic_light.get_location()
         pos = self._world_to_pixel(world_pos)
         radius = int(self._pixels_per_meter * 1.2)
-        cv2.circle(surface, center=pos, radius=radius, color=color, thickness=cv2.FILLED)
+        cv2.circle(
+            surface, center=pos, radius=radius, color=color, thickness=cv2.FILLED
+        )
 
     def _render_stop_signs(self, **env_state):
-        stop_sign_state = env_state.get("stop_sign_state",{})
+        stop_sign_state = env_state.get("stop_sign_state", {})
         stop_signs = self._world_manager.carla_actors("stop")
+        if self._ood and self._stop_sign_ids:
+            stop_signs = [
+                stop_sign
+                for stop_sign in stop_signs
+                if stop_sign.id in self._stop_sign_ids
+            ]
         for stop_sign in stop_signs:
             if stop_sign.id in stop_sign_state:
                 if stop_sign_state[stop_sign.id]["color"] == 0:
@@ -330,7 +390,9 @@ class BirdeyeRenderer:
         world_pos = stop_sign.get_location()
         pos = self._world_to_pixel(world_pos)
         radius = int(self._pixels_per_meter * 1.5)
-        cv2.circle(surface, center=pos, radius=radius, color=color, thickness=cv2.FILLED)
+        cv2.circle(
+            surface, center=pos, radius=radius, color=color, thickness=cv2.FILLED
+        )
 
     def _blit_to_display(self, display: np.ndarray):
         """Blit the rendered surface to the display."""
@@ -343,10 +405,16 @@ class BirdeyeRenderer:
         ego_transform = self._ego.get_transform()
         ego_center = self._world_to_pixel(ego_transform.location)
 
-        rotate_matrix = cv2.getRotationMatrix2D(ego_center, ego_transform.rotation.yaw + 90, 1)
+        rotate_matrix = cv2.getRotationMatrix2D(
+            ego_center, ego_transform.rotation.yaw + 90, 1
+        )
         rotate_matrix[0][2] -= ego_center[0] - self._screen_size / 2
-        rotate_matrix[1][2] -= ego_center[1] - self._screen_size / 2 - self._pixels_ahead_vehicle
-        self._rotated_surface = cv2.warpAffine(self._surface, rotate_matrix, (self._screen_size, self._screen_size))
+        rotate_matrix[1][2] -= (
+            ego_center[1] - self._screen_size / 2 - self._pixels_ahead_vehicle
+        )
+        self._rotated_surface = cv2.warpAffine(
+            self._surface, rotate_matrix, (self._screen_size, self._screen_size)
+        )
         display[:] = self._rotated_surface
 
     def _blit_centered(self, display: np.ndarray):
@@ -362,10 +430,15 @@ class BirdeyeRenderer:
             : min(self._map_size, display.shape[1]),
         ]
 
-    def _render_polygon(self, surface: np.ndarray, vehicle_polygon: ActorPolygon, color: Color):
+    def _render_polygon(
+        self, surface: np.ndarray, vehicle_polygon: ActorPolygon, color: Color
+    ):
         """Render a list of polygons on the surface."""
         actor_corners = np.array(
-            [self._world_to_pixel(carla.Location(x=p[0], y=p[1])) for p in vehicle_polygon],
+            [
+                self._world_to_pixel(carla.Location(x=p[0], y=p[1]))
+                for p in vehicle_polygon
+            ],
             dtype=np.int32,
         )
         cv2.fillPoly(surface, [actor_corners], color)
@@ -388,7 +461,9 @@ class BirdeyeRenderer:
         start = 0
         for i, p in enumerate(path):
             p_direction = np.array(p[:2]) - np.array(polygon_center)
-            vehicle_direction = np.array(vehicle_polygon[1]) - np.array(vehicle_polygon[2])
+            vehicle_direction = np.array(vehicle_polygon[1]) - np.array(
+                vehicle_polygon[2]
+            )
             if np.dot(p_direction, vehicle_direction) < 0:
                 start = i + 1
         if start >= len(path):
@@ -397,7 +472,10 @@ class BirdeyeRenderer:
 
         # Convert the centroid and path points to pixel coordinates
         corners = np.array(
-            [self._world_to_pixel(carla.Location(x=p[0], y=p[1])) for p in [polygon_center] + path],
+            [
+                self._world_to_pixel(carla.Location(x=p[0], y=p[1]))
+                for p in [polygon_center] + path
+            ],
             dtype=np.int32,
         )
         # Draw the path as a polyline on the surface

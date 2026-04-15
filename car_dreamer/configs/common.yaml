@@ -70,6 +70,7 @@ env:
       color_by_obs: False
       waypoint_obs: visible # [neighbor, visible, all]
       extend_wpt: False
+      ood: False
       entities: [roadmap, waypoints, ego_vehicle, background_vehicles]
 
     # Render waypoints on BEV
@@ -87,6 +88,7 @@ env:
       color_by_obs: False
       waypoint_obs: visible
       extend_wpt: False
+      ood: False
       entities:
         [
           roadmap,
@@ -109,6 +111,7 @@ env:
       color_by_obs: True
       waypoint_obs: visible
       extend_wpt: False
+      ood: False
       entities:
         [
           roadmap,
@@ -132,6 +135,7 @@ env:
       color_by_obs: False
       waypoint_obs: visible
       extend_wpt: False
+      ood: False
       entities:
         [
           roadmap,
@@ -155,6 +159,7 @@ env:
       color_by_obs: False
       waypoint_obs: visible
       extend_wpt: False
+      ood: False
       error_rate: 0.2
       entities: [roadmap, waypoints, error_background_waypoints, ego_vehicle, background_vehicles]
 

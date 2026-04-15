@@ -33,37 +33,48 @@ carla_navigation:
     decoder.cnn_kernels: [5, 5, 5, 6, 6]
     train.log_keys_video: [camera, birdeye_wpt]
 
-carla_right_turn_simple_ood_multi: &carla_right_turn_simple_ood_multi
+carla_right_turn_simple_ood_base: &carla_right_turn_simple_ood_base
   env:
     world:
       town: Town04
     name: CarlaRightTurnEnv-v0
     action:
       discrete_steer: [-0.9, -0.3, 0.0, 0.3, 0.9]
-    observation.enabled: [camera, collision, birdeye_wpt, lidar, birdeye_raw, birdeye_with_traffic_lights, birdeye_gt] #Geigh Zollicoffer
+    observation.enabled: [camera, collision, birdeye_wpt, lidar, birdeye_raw, birdeye_with_traffic_lights, birdeye_gt]
     <<: *carla_wpt
     lane_start_point: [179.5, -169.5, 2.5, 0.0]
-    ego_path: [[179.5, -169.5, 2.5], [200.0, -144.5, 2.5]] # [[179.5, -169.5, 0.1], [200.0, -149.5, 0.1]]
+    ego_path: [[179.5, -169.5, 2.5], [200.0, -144.5, 2.5]]
     use_road_waypoints: [True, False]
-    flow_spawn_point: [198.5, -189.5, 2.5, 90.0] # [195.0, -175.0, 0.1, 90.0]
-    # Stationary pile-up vehicles [x, y, z, yaw]
+    flow_spawn_point: [198.5, -189.5, 2.5, 90.0]
+    flow_cleanup_bounds:
+      min_x: 165.0
+      max_x: 230.0
+      min_y: -185.0
+      max_y: -155.0
     pileup_positions:
-    # Rear-end collision
-    - [205.0, -169.5, 0.5, 12.0]    # Car 1, front car
-    - [202.0, -169.2, 0.5, 8.0]     # Car 2, rear-ended into Car 1 (close x, similar y)
-    
-    # Side impact / T-bone
-    - [200.5, -173.5, 0.5, 85.0]    # Car 3, perpendicular angle (T-bone)
-    # - [214.0, -174.0, 2.5, -160.0]  # Car 8, spun out
-    # - [217.0, -173.0, 2.5, 145.0]   # Car 9, angled across lane
-    # - [209.0, -174.5, 2.5, 180.0]   # Car 10, blocking other lane
-      
-    terminal:
-      time_limit: 500 # maximum timesteps per episode
-      out_lane_thres: 3 # threshold for out of lane
-    
+      - [205.0, -169.5, 0.5, 12.0]
+      - [202.0, -169.2, 0.5, 8.0]
+      - [200.5, -173.5, 0.5, 85.0]
+    observation.birdeye_raw.ood: True
+    observation.birdeye_wpt.ood: True
+    observation.birdeye_with_traffic_lights.ood: True
+    observation.birdeye_gt.ood: True
     display:
       render_keys: [camera, birdeye_wpt]
+
+  dreamerv3:
+    encoder.cnn_keys: "birdeye_wpt"
+    decoder.cnn_keys: "birdeye_wpt"
+    run.log_keys_video: [camera, birdeye_wpt, lidar]
+
+  dreamerv2:
+    encoder.cnn_keys: "birdeye_wpt"
+    decoder.cnn_keys: "birdeye_wpt"
+    decoder.cnn_kernels: [5, 5, 5, 6, 6]
+    train.log_keys_video: [camera, birdeye_wpt]
+
+carla_right_turn_simple_ood_multi:
+  <<: *carla_right_turn_simple_ood_base
 
 carla_four_lane:
   env:
@@ -94,48 +105,8 @@ carla_four_lane:
     decoder.cnn_kernels: [5, 5, 5, 6, 6]
     train.log_keys_video: [camera, birdeye_wpt]
 
-carla_right_turn_simple_single_ood: &carla_right_turn_simple_ood
-  env:
-    world:
-      town: Town04
-    name: CarlaRightTurnEnv-v0
-    action:
-      discrete_steer: [-0.9, -0.3, 0.0, 0.3, 0.9]
-    observation.enabled: [camera, collision, birdeye_wpt, lidar, birdeye_raw, birdeye_with_traffic_lights, birdeye_gt] #Geigh Zollicoffer
-    <<: *carla_wpt
-    lane_start_point: [179.5, -169.5, 2.5, 0.0]
-    ego_path: [[179.5, -169.5, 2.5], [200.0, -144.5, 2.5]] # [[179.5, -169.5, 0.1], [200.0, -149.5, 0.1]]
-    use_road_waypoints: [True, False]
-    flow_spawn_point: [198.5, -189.5, 2.5, 90.0] # [195.0, -175.0, 0.1, 90.0]
-    # Stationary pile-up vehicles [x, y, z, yaw]
-    pileup_positions:
-    # Rear-end collision
-    - [205.0, -169.5, 0.5, 12.0]    # Car 1, front car
-    - [202.0, -169.2, 0.5, 8.0]     # Car 2, rear-ended into Car 1 (close x, similar y)
-    
-    # Side impact / T-bone
-    - [200.5, -173.5, 0.5, 85.0]    # Car 3, perpendicular angle (T-bone)
-    # - [214.0, -174.0, 2.5, -160.0]  # Car 8, spun out
-    # - [217.0, -173.0, 2.5, 145.0]   # Car 9, angled across lane
-    # - [209.0, -174.5, 2.5, 180.0]   # Car 10, blocking other lane
-      
-    terminal:
-      time_limit: 500 # maximum timesteps per episode
-      out_lane_thres: 3 # threshold for out of lane
-    
-    display:
-      render_keys: [camera, birdeye_wpt]
-
-  dreamerv3:
-    encoder.cnn_keys: "birdeye_wpt" # 'camera|birdeye_wpt|lidar|birdeye_raw|birdeye_with_traffic_lights|birdeye_gt'
-    decoder.cnn_keys: "birdeye_wpt" # 'camera|birdeye_wpt|lidar|birdeye_raw|birdeye_with_traffic_lights|birdeye_gt'
-    run.log_keys_video: [camera, birdeye_wpt, lidar]
-
-  dreamerv2:
-    encoder.cnn_keys: "birdeye_wpt"
-    decoder.cnn_keys: "birdeye_wpt"
-    decoder.cnn_kernels: [5, 5, 5, 6, 6]
-    train.log_keys_video: [camera, birdeye_wpt]
+carla_right_turn_simple_single_ood:
+  <<: *carla_right_turn_simple_ood_base
 
 carla_overtake:
   env:
@@ -202,6 +173,10 @@ carla_right_turn_simple: &carla_right_turn_simple
     ego_path: [[-33.8, -135.1, 0.1], [-5.0, -110.3, 0.1]]
     use_road_waypoints: [True, False]
     flow_spawn_point: [-3.4, -151.2, 0.1, 90.0]
+    flow_cleanup_bounds:
+      min_x: -38.4
+      max_x: 31.6
+      max_y: -81.2
 
   dreamerv3:
     encoder.cnn_keys: "birdeye_wpt" #'camera|birdeye_wpt|lidar|birdeye_raw|birdeye_with_traffic_lights|birdeye_gt'
