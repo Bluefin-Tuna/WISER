@@ -70,6 +70,21 @@ class Agent(nj.Module):
     def train_initial(self, batch_size):
         return self.wm.initial(batch_size)
 
+    def _unpack_policy_state(self, state):
+        if len(state) == 5:
+            (prev_latent, prev_action), task_state, expl_state, stage, _ = state
+        elif len(state) == 4:
+            (prev_latent, prev_action), task_state, expl_state, stage = state
+        elif len(state) == 3:
+            (prev_latent, prev_action), task_state, expl_state = state
+            stage = jnp.array(0, dtype=jnp.int32)
+        else:
+            raise ValueError(f"Unexpected policy state length: {len(state)}")
+        return (prev_latent, prev_action), task_state, expl_state, stage
+
+    def _available_image_keys(self, obs):
+        return [key for key in IMAGE_OBS_KEYS if key in obs]
+
     def _configured_cnn_keys(self):
         keys = self.wm.config.encoder.cnn_keys
         if isinstance(keys, str):
@@ -82,7 +97,7 @@ class Agent(nj.Module):
         for key in self._configured_cnn_keys():
             if key in obs:
                 return key
-        available = [key for key in IMAGE_OBS_KEYS if key in obs]
+        available = self._available_image_keys(obs)
         if available:
             return available[0]
         raise KeyError("No available image key found in observation.")
@@ -132,7 +147,7 @@ class Agent(nj.Module):
         latent,
         prior_orig,
     ):
-        available_keys = [key for key in IMAGE_OBS_KEYS if key in obs]
+        available_keys = self._available_image_keys(obs)
         if not available_keys:
             return latent
 
@@ -208,7 +223,292 @@ class Agent(nj.Module):
         )
         return tree_map(lambda stacked: stacked[min_idx], stacked_latents)
 
-    def _reject_mode_latent(
+    def _compute_dropped_latent(self, prev_latent, prev_action, embed, is_first):
+        return self.wm.rssm.obs_step(prev_latent, prev_action, embed, is_first)
+
+    def _compute_recon_score(
+        self,
+        obs_reference,
+        dropped_residual_latent,
+        current_latent,
+        available_keys,
+    ):
+        recon_score = 0.0
+        for image_key in available_keys:
+            truth, reconstruct_post_dropped, reconstruct_post = self.get_recon_imgs(
+                obs_reference,
+                dropped_residual_latent,
+                current_latent,
+                image_key,
+            )
+            recon_score += jnp.mean(
+                jnp.abs(obs_reference[image_key] - reconstruct_post_dropped)
+            )
+        return recon_score
+
+    def _compute_single_sensor_latents(
+        self,
+        obs,
+        prev_latent,
+        prev_action,
+        available_keys,
+    ):
+        all_latents = []
+        all_surprises = []
+
+        for image_key in available_keys:
+            obs_masked = obs.copy()
+            for key in available_keys:
+                obs_masked[key] = jnp.zeros_like(obs[key])
+            obs_masked[image_key] = obs[image_key]
+
+            embed = self.wm.encoder(obs_masked)
+            temp_latent, temp_prior = self.wm.rssm.obs_step(
+                prev_latent, prev_action, embed, obs["is_first"]
+            )
+            surprise = self.wm.rssm.get_dist(temp_latent).kl_divergence(
+                self.wm.rssm.get_dist(temp_prior)
+            )
+
+            all_latents.append(temp_latent)
+            all_surprises.append(jnp.mean(surprise))
+
+        stacked_latents = tree_map(
+            lambda *lats: jnp.stack(lats, axis=0),
+            *all_latents,
+        )
+        stacked_surprises = jnp.stack(all_surprises)
+        return stacked_latents, stacked_surprises
+
+    def _compute_iterative_masked_latents(
+        self,
+        obs,
+        prev_latent,
+        prev_action,
+        available_keys,
+        single_sensor_surprises,
+        depth,
+    ):
+        depth = min(depth, len(available_keys))
+        if depth <= 0:
+            return None, jnp.array([], dtype=jnp.float32)
+
+        sorted_indices = jnp.argsort(single_sensor_surprises)[::-1]
+        all_latents = []
+        all_surprises = []
+
+        for i in range(depth):
+            obs_iter = obs.copy()
+            for mask_idx in range(i + 1):
+                idx = sorted_indices[mask_idx]
+                for j, key_name in enumerate(available_keys):
+                    should_mask = idx == j
+                    obs_iter[key_name] = jnp.where(
+                        should_mask,
+                        jnp.zeros_like(obs_iter[key_name]),
+                        obs_iter[key_name],
+                    )
+
+            embed = self.wm.encoder(obs_iter)
+            temp_latent, temp_prior = self.wm.rssm.obs_step(
+                prev_latent, prev_action, embed, obs["is_first"]
+            )
+            surprise = self.wm.rssm.get_dist(temp_latent).kl_divergence(
+                self.wm.rssm.get_dist(temp_prior)
+            )
+
+            all_latents.append(temp_latent)
+            all_surprises.append(jnp.mean(surprise))
+
+        stacked_latents = tree_map(
+            lambda *lats: jnp.stack(lats, axis=0),
+            *all_latents,
+        )
+        stacked_surprises = jnp.stack(all_surprises)
+        return stacked_latents, stacked_surprises
+
+    def _select_best_latent_from_candidates(
+        self,
+        candidate_latents,
+        candidate_surprises,
+        base_latent,
+        base_surprise,
+    ):
+        valid_latents = []
+        valid_surprises = []
+
+        for latents, surprises in zip(candidate_latents, candidate_surprises):
+            if latents is None:
+                continue
+            if surprises.size == 0:
+                continue
+            valid_latents.append(latents)
+            valid_surprises.append(surprises)
+
+        valid_latents.append(tree_map(lambda x: x[None], base_latent))
+        valid_surprises.append(jnp.array([jnp.mean(base_surprise)]))
+
+        all_surprises = jnp.concatenate(valid_surprises, axis=0)
+        stacked_latents = tree_map(
+            lambda *arrays: jnp.concatenate(arrays, axis=0),
+            *valid_latents,
+        )
+        min_idx = jnp.argmin(all_surprises)
+        best_latent = tree_map(lambda x: x[min_idx], stacked_latents)
+        best_surprise = all_surprises[min_idx]
+        return best_latent, best_surprise
+
+    def _reject_multi_sensor_latent(
+        self,
+        obs,
+        prev_latent,
+        prev_action,
+        latent,
+        prior_orig,
+        available_keys,
+    ):
+        tau = self.config.run.reject_tau
+        reset_tau = getattr(self.config.run, "reject_reset_tau", tau)
+        is_first = jnp.ones_like(obs["is_first"], dtype=jnp.float32)
+
+        base_surprise = self.wm.rssm.get_dist(latent).kl_divergence(
+            self.wm.rssm.get_dist(prior_orig)
+        )
+
+        obs_predictive = obs.copy()
+        sensor_recon_scores = []
+        for image_key in available_keys:
+            obs_masked = obs.copy()
+            for key in available_keys:
+                obs_masked[key] = jnp.zeros_like(obs[key])
+            obs_masked[image_key] = obs[image_key]
+
+            embed = self.wm.encoder(obs_masked)
+            dropped_residual_latent, _ = self._compute_dropped_latent(
+                prev_latent,
+                prev_action,
+                embed,
+                is_first,
+            )
+
+            truth, reconstruct_post_dropped, reconstruct_post = self.get_recon_imgs(
+                obs,
+                dropped_residual_latent,
+                latent,
+                image_key,
+            )
+            recon_score = jnp.mean(jnp.abs(obs[image_key] - reconstruct_post_dropped))
+            sensor_recon_scores.append(recon_score)
+
+            obs_predictive[image_key] = jnp.where(
+                recon_score < tau,
+                obs[image_key],
+                reconstruct_post.astype(obs_predictive[image_key].dtype),
+            )
+
+        predictive_embed = self.wm.encoder(obs_predictive)
+        predictive_latent, predictive_prior = self.wm.rssm.obs_step(
+            prev_latent,
+            prev_action,
+            predictive_embed,
+            obs["is_first"],
+        )
+        predictive_surprise = self.wm.rssm.get_dist(predictive_latent).kl_divergence(
+            self.wm.rssm.get_dist(predictive_prior)
+        )
+
+        dropped_latent, _ = self._compute_dropped_latent(
+            prev_latent,
+            prev_action,
+            predictive_embed,
+            is_first,
+        )
+        reset_recon_score = self._compute_recon_score(
+            obs_predictive,
+            dropped_latent,
+            predictive_latent,
+            available_keys,
+        )
+
+        single_sensor_latents, single_sensor_surprises = (
+            self._compute_single_sensor_latents(
+                obs,
+                prev_latent,
+                prev_action,
+                available_keys,
+            )
+        )
+        iterative_latents, iterative_surprises = self._compute_iterative_masked_latents(
+            obs,
+            prev_latent,
+            prev_action,
+            available_keys,
+            single_sensor_surprises,
+            max(1, int(self.config.run.surprise_depth)),
+        )
+        best_masked_latent, best_masked_surprise = (
+            self._select_best_latent_from_candidates(
+                [single_sensor_latents, iterative_latents],
+                [single_sensor_surprises, iterative_surprises],
+                predictive_latent,
+                base_surprise,
+            )
+        )
+
+        use_predictive = jnp.mean(predictive_surprise) < tau
+        use_reset = reset_recon_score < reset_tau
+
+        high_surprise_latent = tree_map(
+            lambda dropped, masked: jnp.where(use_reset, dropped, masked),
+            dropped_latent,
+            best_masked_latent,
+        )
+        final_latent = tree_map(
+            lambda predictive, fallback: jnp.where(
+                use_predictive, predictive, fallback
+            ),
+            predictive_latent,
+            high_surprise_latent,
+        )
+
+        stage = jnp.where(
+            use_predictive,
+            jnp.array(0, dtype=jnp.int32),
+            jnp.where(
+                use_reset,
+                jnp.array(1, dtype=jnp.int32),
+                jnp.array(2, dtype=jnp.int32),
+            ),
+        )
+
+        image_key = self._primary_image_key(obs)
+        truth = obs[image_key]
+        predictive_img = obs_predictive[image_key]
+        predictive_recon = self.get_single_recon(predictive_latent, image_key)
+        dropped_recon = self.get_single_recon(dropped_latent, image_key)
+        masked_recon = self.get_single_recon(best_masked_latent, image_key)
+        video = jnp.concatenate(
+            [
+                truth,
+                predictive_img,
+                predictive_recon,
+                dropped_recon,
+                masked_recon,
+            ],
+            axis=2,
+        )
+
+        details = {
+            "image_key": image_key,
+            "video": video,
+            "condition_1": jnp.mean(predictive_surprise),
+            "condition_2": reset_recon_score,
+            "condition_3": best_masked_surprise,
+            "sensor_recon_mean": jnp.mean(jnp.stack(sensor_recon_scores)),
+        }
+        return final_latent, final_latent, stage, details
+
+    def _reject_single_sensor_latent(
         self,
         obs,
         prev_latent,
@@ -330,6 +630,34 @@ class Agent(nj.Module):
         }
         return latent, action_latent, stage, details
 
+    def _reject_mode_latent(
+        self,
+        obs,
+        prev_latent,
+        prev_action,
+        latent,
+        prior_orig,
+        stage,
+    ):
+        available_keys = self._available_image_keys(obs)
+        if len(available_keys) <= 1:
+            return self._reject_single_sensor_latent(
+                obs,
+                prev_latent,
+                prev_action,
+                latent,
+                prior_orig,
+                stage,
+            )
+        return self._reject_multi_sensor_latent(
+            obs,
+            prev_latent,
+            prev_action,
+            latent,
+            prior_orig,
+            available_keys,
+        )
+
     def _apply_mode_transform(
         self,
         mode,
@@ -369,7 +697,9 @@ class Agent(nj.Module):
 
     def policy(self, obs, state, mode="train"):
         obs = self.preprocess(obs)
-        (prev_latent, prev_action), task_state, expl_state, stage = state if len(state) == 4 else (*state, jnp.array(0, dtype=jnp.int32))
+        (prev_latent, prev_action), task_state, expl_state, stage = (
+            self._unpack_policy_state(state)
+        )
 
         embed = self.wm.encoder(obs)
         latent, prior_orig = self.wm.rssm.obs_step(
