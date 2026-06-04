@@ -309,7 +309,7 @@
       <h2 class="title is-3">Why Surprise Recognition?</h2>
       <div class="content has-text-justified">
         <p>
-          World models learn relationships between observations, latent states, and posterior predictions during training. In open-world deployment, however, OOD noise, distractors, and sensor failures can push the model away from the true state. Surprise recognition provides a way to reject corrupted information so the agent can degrade gracefully instead of treating every observation as actionable.
+          Unknown observations are unavoidable in open-world deployment, so policies need a way to degrade gracefully. World models learn relationships between observations, latent states, and posterior predictions during training. However, OOD noise, distractors, and sensor failures can push the model away from the true state. Surprise recognition provides a mechanism for rejecting corrupted information before it contaminates the agent's state estimate, helping the policy remain predictable instead of treating every observation as actionable.
         </p>
         <p>
           This work studies a focused subset of novelty adaptation: if transitions become noisy, can an agent recognize which observations are unreliable before the policy acts?
