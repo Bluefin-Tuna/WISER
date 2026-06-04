@@ -278,6 +278,20 @@
   <section class="section" style="padding-top: 1rem;">
     <div class="container is-max-desktop">
       <h2 class="title is-3">Why Surprise Recognition?</h2>
+      <div class="narrative-grid">
+        <div class="narrative-item">
+          <div class="narrative-label">Training</div>
+          <p>The world model learns a relationship between observations, latent state, and posterior predictions.</p>
+        </div>
+        <div class="narrative-item">
+          <div class="narrative-label">Novelty</div>
+          <p>OOD noise, distractors, or sensor failures push the model away from the true state.</p>
+        </div>
+        <div class="narrative-item">
+          <div class="narrative-label">Robustness</div>
+          <p>Surprise recognition rejects corrupted information and helps the agent degrade gracefully.</p>
+        </div>
+      </div>
       <div class="content has-text-justified">
         <p>
           World models are prone to misinterpreting the state when they see something unknown. A clean posterior during training can become unreliable under novelty, causing bad user experiences or unknown agent behavior.
@@ -319,20 +333,6 @@
             <source src="eval_policy_occlusion.mp4" type="video/mp4">
           </video>
           <p class="figure-caption">Occlusion</p>
-        </div>
-      </div>
-      <div class="narrative-grid">
-        <div class="narrative-item">
-          <div class="narrative-label">Training</div>
-          <p>The world model learns a relationship between observations, latent state, and posterior predictions.</p>
-        </div>
-        <div class="narrative-item">
-          <div class="narrative-label">Novelty</div>
-          <p>OOD noise, distractors, or sensor failures push the model away from the true state.</p>
-        </div>
-        <div class="narrative-item">
-          <div class="narrative-label">Robustness</div>
-          <p>Surprise recognition rejects corrupted information and helps the agent degrade gracefully.</p>
         </div>
       </div>
     </div>
