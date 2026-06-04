@@ -149,6 +149,20 @@
       height: auto;
     }
 
+    .ood-video-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 0.75rem;
+      margin-top: 1rem;
+      align-items: start;
+    }
+
+    .ood-video-grid video {
+      width: 100%;
+      height: auto;
+      border-radius: 6px;
+    }
+
     .metric-table th,
     .metric-table td {
       text-align: center;
@@ -168,7 +182,8 @@
       .teaser-layout,
       .narrative-grid,
       .result-grid,
-      .result-grid-wide {
+      .result-grid-wide,
+      .ood-video-grid {
         grid-template-columns: 1fr;
       }
 
@@ -269,6 +284,41 @@
         <p>
           This work studies a focused subset of novelty adaptation: if transitions become noisy, can an agent recognize which observations are unreliable before the policy acts?
         </p>
+        <p>
+          For example, an autonomous agent may still need to follow the same high-level objective, such as staying in lane or stopping at a sign, while OOD visual artifacts, limited visibility, or sensor corruption distort the lower-level state used by the policy. When that state becomes incoherent, the policy can no longer reliably translate the objective into coherent primitive actions such as steering, braking, or maintaining course.
+        </p>
+      </div>
+      <div class="ood-video-grid">
+        <div>
+          <video autoplay playsinline loop muted controls>
+            <source src="eval_policy_chrome.mp4" type="video/mp4">
+          </video>
+          <p class="figure-caption">Chrome</p>
+        </div>
+        <div>
+          <video autoplay playsinline loop muted controls>
+            <source src="eval_policy_gaussian.mp4" type="video/mp4">
+          </video>
+          <p class="figure-caption">Gaussian</p>
+        </div>
+        <div>
+          <video autoplay playsinline loop muted controls>
+            <source src="eval_policy_glare.mp4" type="video/mp4">
+          </video>
+          <p class="figure-caption">Glare</p>
+        </div>
+        <div>
+          <video autoplay playsinline loop muted controls>
+            <source src="eval_policy_jitter.mp4" type="video/mp4">
+          </video>
+          <p class="figure-caption">Jitter</p>
+        </div>
+        <div>
+          <video autoplay playsinline loop muted controls>
+            <source src="eval_policy_occlusion.mp4" type="video/mp4">
+          </video>
+          <p class="figure-caption">Occlusion</p>
+        </div>
       </div>
       <div class="narrative-grid">
         <div class="narrative-item">
