@@ -1,0 +1,534 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <meta name="description" content="World Model Robustness via Surprise Recognition">
+  <meta name="keywords" content="World Models, Reinforcement Learning, Robustness, Surprise Recognition, OOD Noise">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>World Model Robustness via Surprise Recognition</title>
+
+  <link href="https://fonts.googleapis.com/css?family=Google+Sans|Noto+Sans|Castoro" rel="stylesheet">
+  <link rel="stylesheet" href="static/css/bulma.min.css">
+  <link rel="stylesheet" href="static/css/bulma-carousel.min.css">
+  <link rel="stylesheet" href="static/css/bulma-slider.min.css">
+  <link rel="stylesheet" href="static/css/fontawesome.all.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jpswalsh/academicons@1/css/academicons.min.css">
+  <link rel="stylesheet" href="static/css/index.css">
+  <link rel="icon" href="static/images/favicon.ico">
+
+  <script defer src="static/js/fontawesome.all.min.js"></script>
+  <script src="static/js/bulma-carousel.min.js"></script>
+  <script src="static/js/bulma-slider.min.js"></script>
+  <script src="static/js/index.js"></script>
+
+  <style>
+    html,
+    body {
+      font-size: 20px !important;
+    }
+
+    .hero .container,
+    .section .container.is-max-desktop,
+    footer .container {
+      max-width: 1280px !important;
+      width: min(1280px, calc(100vw - 48px)) !important;
+    }
+
+    .publication-title {
+      font-size: 3.35rem !important;
+      line-height: 1.12 !important;
+    }
+
+    .publication-authors {
+      font-size: 1.3rem !important;
+    }
+
+    .publication-links .button {
+      font-size: 1.05rem !important;
+    }
+
+    .title.is-3 {
+      font-size: 2.3rem !important;
+    }
+
+    .title.is-5 {
+      font-size: 1.45rem !important;
+    }
+
+    .content p,
+    .content li,
+    .narrative-item p,
+    .figure-caption,
+    .table,
+    .table th,
+    .table td {
+      font-size: 1.15rem !important;
+      line-height: 1.7 !important;
+    }
+
+    .paper-figure {
+      display: block;
+      width: 100%;
+      height: auto;
+      margin: 0 auto;
+      border-radius: 6px;
+    }
+
+    .figure-caption {
+      color: #4a4a4a;
+      margin-top: 0.5rem;
+    }
+
+    .teaser-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 2.4fr) minmax(240px, 0.9fr);
+      gap: 1rem;
+      align-items: end;
+    }
+
+    .teaser-main {
+      display: grid;
+      grid-template-rows: auto auto;
+      gap: 1rem;
+      align-items: end;
+    }
+
+    .teaser-top {
+      display: flex;
+      justify-content: center;
+    }
+
+    .teaser-top img {
+      width: min(540px, 82%);
+      height: auto;
+    }
+
+    .teaser-bottom img,
+    .teaser-side img {
+      width: 100%;
+      height: auto;
+    }
+
+    .narrative-grid,
+    .result-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.75rem;
+      align-items: start;
+    }
+
+    .result-grid-wide {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1rem;
+      align-items: start;
+      margin-top: 1rem;
+    }
+
+    .narrative-item {
+      border-left: 3px solid #3273dc;
+      padding-left: 0.75rem;
+    }
+
+    .narrative-label {
+      color: #3273dc;
+      font-size: 0.875rem;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    .result-grid img {
+      width: 100%;
+      height: auto;
+    }
+
+    .result-grid-wide img {
+      width: 100%;
+      height: auto;
+    }
+
+    .metric-table th,
+    .metric-table td {
+      text-align: center;
+      vertical-align: middle;
+    }
+
+    .metric-table td:first-child,
+    .metric-table th:first-child {
+      text-align: left;
+    }
+
+    .key-points li {
+      margin-bottom: 0.65rem;
+    }
+
+    @media screen and (max-width: 768px) {
+      .teaser-layout,
+      .narrative-grid,
+      .result-grid,
+      .result-grid-wide {
+        grid-template-columns: 1fr;
+      }
+
+      .teaser-top img {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <section class="hero">
+    <div class="hero-body">
+      <div class="container is-max-desktop">
+        <div class="columns is-centered">
+          <div class="column has-text-centered">
+            <h1 class="title is-1 publication-title">World Model Robustness via Surprise Recognition</h1>
+            <div class="is-size-5 publication-authors">
+              <span class="author-block"><a href="https://www.linkedin.com/in/geigh-zollicoffer/">Geigh Zollicoffer</a><sup>*</sup>,</span>
+              <span class="author-block"><a href="https://tanush.xyz/">Tanush Chopra</a><sup>*</sup>,</span>
+              <span class="author-block"><a href="https://www.mingkuan.dev/">Mingkuan Yan</a>,</span>
+              <span class="author-block"><a href="https://mxx0723.github.io/">Xiaoxu Ma</a>,</span>
+              <span class="author-block"><a href="https://www.linkedin.com/in/kenneth-eaton/">Kenneth Eaton</a>,</span>
+              <span class="author-block"><a href="https://eilab.gatech.edu/mark-riedl.html">Mark Riedl</a></span>
+            </div>
+
+            <div class="is-size-5 publication-authors">
+              <span class="author-block">Georgia Institute of Technology</span>
+            </div>
+            <div class="is-size-6 publication-authors">
+              <span class="author-block"><sup>*</sup>Equal contribution</span>
+            </div>
+
+            <div class="column has-text-centered">
+              <div class="publication-links">
+                <span class="link-block">
+                  <a href="static/documents/wiser.pdf" class="external-link button is-normal is-rounded is-dark">
+                    <span class="icon"><i class="fas fa-file-pdf"></i></span>
+                    <span>Paper</span>
+                  </a>
+                </span>
+                <span class="link-block">
+                  <a href="https://huggingface.co/GeighZ/WISER/tree/main" class="external-link button is-normal is-rounded is-dark">
+                    <span class="icon"><i class="fas fa-database"></i></span>
+                    <span>Hugging Face</span>
+                  </a>
+                </span>
+                <span class="link-block">
+                  <a href="https://github.com/Bluefin-Tuna/WISER" class="external-link button is-normal is-rounded is-dark">
+                    <span class="icon"><i class="fab fa-github"></i></span>
+                    <span>Code</span>
+                  </a>
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" style="padding-top: 0rem;">
+    <div class="container is-max-desktop">
+      <div class="teaser-layout">
+        <div class="teaser-main">
+          <div class="teaser-top">
+            <img src="1.png" alt="WISER world model and policy loop">
+          </div>
+          <div class="teaser-bottom">
+            <img src="2.png" alt="WISER representation selection and context update">
+          </div>
+        </div>
+        <div class="teaser-side">
+          <img src="3.png" alt="WISER rejection sampling and state machine">
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" style="padding-top: 1rem;">
+    <div class="container is-max-desktop">
+      <h2 class="title is-3">Abstract</h2>
+      <div class="content has-text-justified">
+        <p>
+          AI systems deployed in the real world must contend with distractions and out-of-distribution (OOD) noise that can destabilize their policies and lead to unsafe behavior. While robust training can reduce sensitivity to some forms of noise, it is infeasible to anticipate all possible OOD conditions. To mitigate this issue, we develop an algorithm that leverages a world model's inherent measure of surprise to reduce the impact of noise in world model-based reinforcement learning agents. We introduce both multi-representation and single-representation rejection sampling, enabling robustness to settings with multiple faulty sensors or a single faulty sensor. While the introduction of noise typically degrades agent performance, we show that our techniques preserve performance relative to baselines under varying types and levels of noise across multiple environments within self-driving simulation domains, CARLA and Safety Gymnasium. Furthermore, we demonstrate that our methods enhance the stability of two state-of-the-art world models with markedly different underlying architectures: Cosmos and DreamerV3. Together, these results highlight the robustness of our approach across world modeling domains.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" style="padding-top: 1rem;">
+    <div class="container is-max-desktop">
+      <h2 class="title is-3">Why Surprise Recognition?</h2>
+      <div class="content has-text-justified">
+        <p>
+          World models are prone to misinterpreting the state when they see something unknown. A clean posterior during training can become unreliable under novelty, causing bad user experiences or unknown agent behavior.
+        </p>
+        <p>
+          This work studies a focused subset of novelty adaptation: if transitions become noisy, can an agent recognize which observations are unreliable before the policy acts?
+        </p>
+      </div>
+      <div class="narrative-grid">
+        <div class="narrative-item">
+          <div class="narrative-label">Training</div>
+          <p>The world model learns a relationship between observations, latent state, and posterior predictions.</p>
+        </div>
+        <div class="narrative-item">
+          <div class="narrative-label">Novelty</div>
+          <p>OOD noise, distractors, or sensor failures push the model away from the true state.</p>
+        </div>
+        <div class="narrative-item">
+          <div class="narrative-label">Robustness</div>
+          <p>Surprise recognition rejects corrupted information and helps the agent degrade gracefully.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" style="padding-top: 1rem;">
+    <div class="container is-max-desktop">
+      <h2 class="title is-3">Sensor Failures and Distractors</h2>
+      <div class="content has-text-justified">
+        <p>
+          In autonomous driving, failure often starts before an AI system even has a chance to reason correctly. Visual artifacts, limited visibility, and feed latency can corrupt observations while the policy still receives them as if they were clean.
+        </p>
+      </div>
+      <div class="columns is-centered">
+        <div class="column is-four-fifths">
+          <img src="static/images/wiser_carla_stop_sign.png" class="paper-figure" alt="CARLA stop sign environment">
+          <p class="figure-caption">CARLA stop-sign task performance as more sensors fail.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" style="padding-top: 1rem;">
+    <div class="container is-max-desktop">
+      <h2 class="title is-3">Degradation to Surprise Recognition</h2>
+      <div class="content has-text-justified">
+        <p>
+          WISER addresses different ways the model can fail to interpret observations. The rejection score M(x) checks whether an input is clean, lightly noisy, or too noisy; the denoiser D(x) supports recovery when the signal is salvageable; and a state machine controls whether the agent retains predictive context or switches back toward ground-truth context.
+        </p>
+      </div>
+      <div class="table-container">
+        <table class="table is-fullwidth is-bordered is-striped metric-table">
+          <thead>
+            <tr>
+              <th>Noise Type</th>
+              <th>Base Model</th>
+              <th>Rejection Sampling</th>
+              <th>Avg Diff</th>
+              <th>Relative %</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Chrome</td>
+              <td>0.774</td>
+              <td>0.808</td>
+              <td>0.034</td>
+              <td>3.13</td>
+            </tr>
+            <tr>
+              <td>Gaussian</td>
+              <td>0.767</td>
+              <td>0.810</td>
+              <td>0.043</td>
+              <td>5.00</td>
+            </tr>
+            <tr>
+              <td>Glare</td>
+              <td>0.726</td>
+              <td>0.809</td>
+              <td>0.083</td>
+              <td>11.98</td>
+            </tr>
+            <tr>
+              <td>Jitter</td>
+              <td>0.719</td>
+              <td>0.812</td>
+              <td>0.093</td>
+              <td>12.25</td>
+            </tr>
+            <tr>
+              <td>Occlusion</td>
+              <td>0.787</td>
+              <td>0.810</td>
+              <td>0.023</td>
+              <td>3.18</td>
+            </tr>
+            <tr class="is-selected">
+              <td><strong>Overall</strong></td>
+              <td><strong>0.755</strong></td>
+              <td><strong>0.810</strong></td>
+              <td><strong>0.055</strong></td>
+              <td><strong>7.11</strong></td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="figure-caption">
+          Cosmos Predict-2.5 quality scores under corrupted input videos. Rejection sampling improves overall generation quality by 7.11%.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container is-max-desktop">
+      <h2 class="title is-3">Single Sensor Perspective</h2>
+      <div class="content has-text-justified">
+        <p>
+          With a single sensor, there is no alternative stream to immediately fall back on. WISER uses the world model's abnormal reconstruction behavior and surprise score to avoid taking policy actions from observations that appear corrupted.
+        </p>
+        <p>
+          In the slide framing, rejection sampling achieves an overall relative improvement of 7.11% across tested noise augmentations, with especially strong gains in jitter and glare scenarios.
+        </p>
+      </div>
+      <div class="columns is-centered">
+        <div class="column is-four-fifths">
+          <img src="static/images/wiser_correlation_plot.png" class="paper-figure" alt="Surprise signal correlation plot">
+          <p class="figure-caption">Surprise increases as noise intensity rises across tested CARLA and Safety Gymnasium environments.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" style="padding-top: 1rem;">
+    <div class="container is-max-desktop">
+      <h2 class="title is-3">Multi-Sensor Perspective</h2>
+      <div class="content has-text-justified">
+        <p>
+          The multi-sensor setting asks a harder question: can we find a subset of sensors that still predicts a coherent state in the worst case? WISER breaks multi-sensor processing into two sequential phases.
+        </p>
+      </div>
+      <div class="narrative-grid">
+        <div class="narrative-item">
+          <div class="narrative-label">Step 01</div>
+          <p><strong>Individual analysis:</strong> process and validate each sensor or representation independently.</p>
+        </div>
+        <div class="narrative-item">
+          <div class="narrative-label">Step 02</div>
+          <p><strong>Sensor compatibility:</strong> evaluate whether accepted representations integrate into a coherent state.</p>
+        </div>
+        <div class="narrative-item">
+          <div class="narrative-label">Worst Case</div>
+          <p>Train a descriptive latent structure and search faster for compatible sensors under corruption.</p>
+        </div>
+      </div>
+      <div class="columns is-centered" style="margin-top: 1rem;">
+        <div class="column is-full-width">
+          <img src="2.png" class="paper-figure" alt="WISER multi-sensor representation selection">
+        </div>
+      </div>
+      <div class="result-grid-wide">
+        <div>
+          <img src="static/images/wiser_carla_four_lane_chrome_combined.png" alt="CARLA four lane chrome results">
+          <p class="figure-caption">CARLA Four Lane under chrome perturbations.</p>
+        </div>
+        <div>
+          <img src="static/images/wiser_carla_four_lane_jitter_combined.png" alt="CARLA four lane jitter results">
+          <p class="figure-caption">CARLA Four Lane under jitter perturbations.</p>
+        </div>
+        <div>
+          <img src="static/images/wiser_carla_four_lane_glare_combined.png" alt="CARLA four lane glare results">
+          <p class="figure-caption">CARLA Four Lane under glare perturbations.</p>
+        </div>
+        <div>
+          <img src="static/images/wiser_carla_four_lane_gaussian_combined.png" alt="CARLA four lane gaussian results">
+          <p class="figure-caption">CARLA Four Lane under Gaussian noise.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" style="padding-top: 1rem;">
+    <div class="container is-max-desktop">
+      <h2 class="title is-3">Results on CARLA and Safety Gymnasium</h2>
+      <div class="content has-text-justified">
+        <p>
+          Across CARLA and Safety Gymnasium domains, WISER preserves performance relative to baselines under varying types and levels of noise. The evaluation covers score behavior, cost-related safety metrics, and robustness across different world model architectures.
+        </p>
+      </div>
+
+      <h3 class="title is-5">Performance Metrics by Noise Type</h3>
+      <div class="result-grid">
+        <div>
+          <img src="static/images/wiser_score_pointgoal.png" alt="PointGoal score results">
+          <p class="figure-caption">PointGoal score.</p>
+        </div>
+        <div>
+          <img src="static/images/wiser_score_pointbutton.png" alt="PointButton score results">
+          <p class="figure-caption">PointButton score.</p>
+        </div>
+        <div>
+          <img src="static/images/wiser_score_cargoal.png" alt="CarGoal score results">
+          <p class="figure-caption">CarGoal score.</p>
+        </div>
+      </div>
+
+      <h3 class="title is-5" style="margin-top: 2rem;">Cost and Safety Metrics</h3>
+      <div class="result-grid">
+        <div>
+          <img src="static/images/wiser_cost_pointgoal.png" alt="PointGoal cost ratio results">
+          <p class="figure-caption">PointGoal cost ratio.</p>
+        </div>
+        <div>
+          <img src="static/images/wiser_cost_pointbutton.png" alt="PointButton cost ratio results">
+          <p class="figure-caption">PointButton cost ratio.</p>
+        </div>
+        <div>
+          <img src="static/images/wiser_cost_cargoal.png" alt="CarGoal cost ratio results">
+          <p class="figure-caption">CarGoal cost ratio.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section">
+    <div class="container is-max-desktop">
+      <h2 class="title is-3">Takeaways</h2>
+      <div class="content has-text-justified">
+        <ul class="key-points">
+          <li>Unknown observations are unavoidable in open-world deployment, so policies need a way to degrade gracefully.</li>
+          <li>Surprise recognition lets a world model identify when observations or sensor representations are likely unreliable.</li>
+          <li>Single-sensor rejection sampling controls distractors when no backup stream exists.</li>
+          <li>Multi-sensor rejection sampling searches for a coherent subset of compatible sensors under corruption.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="BibTeX">
+    <div class="container is-max-desktop content">
+      <h2 class="title">BibTeX</h2>
+      <pre><code>@misc{zollicoffer2025worldmodelrobustnesssurprise,
+  title={World Model Robustness via Surprise Recognition},
+  author={Geigh Zollicoffer and Tanush Chopra and Mingkuan Yan and Xiaoxu Ma and Kenneth Eaton and Mark Riedl},
+  year={2025},
+  eprint={2512.01119},
+  archivePrefix={arXiv},
+  primaryClass={cs.LG},
+  url={https://arxiv.org/abs/2512.01119}
+}</code></pre>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <div class="container">
+      <div class="columns is-centered">
+        <div class="column is-8">
+          <div class="content">
+            <p>
+              This website is based on the <a href="https://github.com/nerfies/nerfies.github.io" target="_blank">Nerfies website template</a>,
+              which is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by-sa/4.0/" target="_blank">Creative Commons Attribution-ShareAlike 4.0 International License</a>.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </footer>
+</body>
+
+</html>
