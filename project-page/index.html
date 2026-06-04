@@ -307,23 +307,9 @@
   <section class="section" style="padding-top: 1rem;">
     <div class="container is-max-desktop">
       <h2 class="title is-3">Why Surprise Recognition?</h2>
-      <div class="narrative-grid">
-        <div class="narrative-item">
-          <div class="narrative-label">Training</div>
-          <p>The world model learns a relationship between observations, latent state, and posterior predictions.</p>
-        </div>
-        <div class="narrative-item">
-          <div class="narrative-label">Novelty</div>
-          <p>OOD noise, distractors, or sensor failures push the model away from the true state.</p>
-        </div>
-        <div class="narrative-item">
-          <div class="narrative-label">Robustness</div>
-          <p>Surprise recognition rejects corrupted information and helps the agent degrade gracefully.</p>
-        </div>
-      </div>
       <div class="content has-text-justified">
         <p>
-          World models are prone to misinterpreting the state when they see something unknown. A clean posterior during training can become unreliable under novelty, causing bad user experiences or unknown agent behavior.
+          World models learn relationships between observations, latent states, and posterior predictions during training. In open-world deployment, however, OOD noise, distractors, and sensor failures can push the model away from the true state. Surprise recognition provides a way to reject corrupted information so the agent can degrade gracefully instead of treating every observation as actionable.
         </p>
         <p>
           This work studies a focused subset of novelty adaptation: if transitions become noisy, can an agent recognize which observations are unreliable before the policy acts?
