@@ -47,6 +47,7 @@ defaults:
     off_shelf_mx: ''
     denoise_method: ''
     surprise_depth: 1
+    dropout_training: False
 
 
   envs:
