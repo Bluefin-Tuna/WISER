@@ -1,0 +1,23 @@
+[project]
+name = "wiser"
+authors = [
+    {name = "Dechen Gao", email = "dcgao@ucdavis.edu"},               # Forked from https://github.com/ucd-dare/CarDreamer
+    {name = "Shuangyu Cai", email = "caisy21@mails.tsinghua.edu.cn"}, # Forked from https://github.com/ucd-dare/CarDreamer
+    {name = "Hanchu Zhou", email = "hczhou@ucdavis.edu"},             # Forked from https://github.com/ucd-dare/CarDreamer
+    {name = "Tanush Chopra", email = "tanush.chopra@gatech.edu"},
+    {name = "Geigh Zollicoffer", email = "gzollicoffer3@gatech.edu"}
+]
+version = "0.1.0"
+requires-python = ">=3.10,<3.11"
+dependencies = [
+    "gym==0.12.5",
+    "flask==3.0.3",
+    "opencv-python>=4.9,<5.0",
+    "carla==0.9.15",
+    "numpy==1.24.3",
+    "ruamel.yaml==0.18.6",
+    "typing_extensions==4.5.0",
+    "networkx==3.1",
+    "Shapely==1.8.4",
+    "pyyaml==6.0.1",
+]

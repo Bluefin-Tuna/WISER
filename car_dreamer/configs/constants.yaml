@@ -1,0 +1,11 @@
+defaults:
+  traffic_signs:
+    stop_sign_ids: []
+
+maps:
+  Town03:
+    traffic_signs:
+      stop_sign_ids: []
+  Town04:
+    traffic_signs:
+      stop_sign_ids: [34, 40]
